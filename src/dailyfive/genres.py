@@ -30,7 +30,7 @@ import logging
 import math
 import re
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 
@@ -608,6 +608,77 @@ def scores(*, now: datetime | None = None) -> dict:
         "briefed_families": sorted(f for f, r in families.items() if r["briefed"]),
         "unlabelled_briefs": sum(1 for _b, fam, _s, _d in brief_rows if fam not in families),
     }
+
+
+def trend(days: int = 14, *, now: datetime | None = None) -> dict[str, dict]:
+    """A signed change per family between the last ``days`` and the ``days`` before.
+
+    Display only. Nothing that allocates a brief reads this, and that is the
+    condition on which it is allowed to exist at all: :func:`scores` has no
+    window on purpose, because stacking a decay on a cutoff means a rating
+    counts fully at 59 days and not at all at 61, and puts the retention rule
+    in a second place. A delta needs two disjoint periods by definition, so it
+    gets them here and only here.
+
+    Means inside a bucket are unweighted. A 90-day half-life moves a
+    fourteen-day mean by a few per cent at the far edge, and applying a decay
+    inside the window being compared would make the two ends of the comparison
+    mean different things — the near end fresher by construction, so every
+    family would appear to be improving.
+
+    Both buckets must clear ``GENRE_MIN_RATED`` or the family reports no delta.
+    A movement measured against three ratings is the noise this page exists to
+    stop printing, and half a comparison is not a comparison.
+    """
+    now = now or _now()
+    recent_from = now - timedelta(days=days)
+    prior_from = now - timedelta(days=2 * days)
+
+    with session_scope() as s:
+        rows = s.execute(
+            select(Clip.brief_id, Clip.genre_family, Outcome.rating, Outcome.rated_at)
+            .join(Outcome, Outcome.clip_id == Clip.id)
+            .where(Outcome.rating.isnot(None))).all()
+
+    # Distinct briefs again, for the same reason: the two clips of a pair are
+    # one decision, and counting them twice would let a single day clear a
+    # bucket's threshold on its own.
+    per_brief: dict[int, dict] = {}
+    for bid, fam, rating, rated_at in rows:
+        if fam not in FAMILIES:
+            continue
+        entry = per_brief.setdefault(bid, {"family": fam, "ratings": [], "at": None})
+        entry["ratings"].append(int(rating))
+        if rated_at is not None:
+            stamp = _aware(rated_at)
+            if entry["at"] is None or stamp > entry["at"]:
+                entry["at"] = stamp
+
+    buckets = {f: {"recent": [], "prior": []} for f in FAMILIES}
+    for entry in per_brief.values():
+        at = entry["at"]
+        if at is None:
+            continue
+        value = sum(entry["ratings"]) / len(entry["ratings"])
+        if at >= recent_from:
+            buckets[entry["family"]]["recent"].append(value)
+        elif at >= prior_from:
+            buckets[entry["family"]]["prior"].append(value)
+
+    out: dict[str, dict] = {}
+    for family, both in buckets.items():
+        recent, prior = both["recent"], both["prior"]
+        enough = len(recent) >= GENRE_MIN_RATED and len(prior) >= GENRE_MIN_RATED
+        out[family] = {
+            "days": days,
+            "recent_n": len(recent),
+            "prior_n": len(prior),
+            "recent": round(sum(recent) / len(recent), 2) if recent else None,
+            "prior": round(sum(prior) / len(prior), 2) if prior else None,
+            "delta": (round(sum(recent) / len(recent) - sum(prior) / len(prior), 2)
+                      if enough else None),
+        }
+    return out
 
 
 # ── regimes ──────────────────────────────────────────────────────────────────

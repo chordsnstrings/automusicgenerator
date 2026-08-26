@@ -25,6 +25,7 @@ from datetime import date, timedelta
 
 from sqlalchemy import func, select
 
+from . import genres
 from .codex import current as current_codex
 from .codex import is_negation, save_new_version
 from .db import session_scope
@@ -164,11 +165,25 @@ def aggregate(days: int = 60) -> dict:
             if clip.qc_verdict == "fail" and clip.qc_reason:
                 fail_reasons[_first_reason(clip.qc_reason)] += 1
 
+    # Outside the session above, and outside the window too. genres.scores()
+    # opens its own session and answers a different question: everything else
+    # here is a mean over CLIPS inside `days`, and genre is a mean over distinct
+    # rated BRIEFS with a half-life instead of a cutoff. Two clips of a pair
+    # carry identical brief-derived fields, so counting them as two samples is
+    # exactly how "no synths" and "no pads" reached the codex off two decisions
+    # — and a controlled label repeats by design, which would make that error
+    # worse here rather than milder.
+    genre = genres.scores()
+
     return {
         "observations": n,
         "style_scores": _means(style_vals),
         "bpm_scores": _means(bpm_vals),
         "persona_scores": _means(persona_vals),
+        "genre_scores": _genre_means(genre["families"]),
+        "subgenre_scores": _genre_means(genre["specifics"]),
+        "genre_rated_briefs": genre["rated_briefs"],
+        "genre_unlabelled_briefs": genre["unlabelled_briefs"],
         "qc_failure_reasons": dict(sorted(fail_reasons.items(),
                                           key=lambda kv: -kv[1])[:10]),
         "avoid": _avoid_list(style_vals),
@@ -189,6 +204,14 @@ def apply_learning(*, days: int = 60, dry_run: bool = False) -> dict:
     before = json.dumps(learned, sort_keys=True)
 
     learned["style_scores"] = stats["style_scores"]
+    # Gated in genres.scores(), which reports no mean at all below
+    # GENRE_MIN_RATED, so a family under the bar writes nothing rather than
+    # writing a number the Director would be told beats its priors. The gate is
+    # there and not here for the same reason _means() holds MIN_OBSERVATIONS:
+    # one place decides what counts as enough, and the console reads the same
+    # answer this does.
+    learned["genre_scores"] = stats["genre_scores"]
+    learned["subgenre_scores"] = stats["subgenre_scores"]
     learned["bpm_scores"] = stats["bpm_scores"]
     learned["avoid"] = stats["avoid"]
     learned["observations"] = stats["observations"]
@@ -220,13 +243,21 @@ band floor from 79 to 84 BPM" is checkable, "lean more melodic" is not.
 
 Be explicit about which signal you are reading. If most clips carry no human \
 rating, you are reading the Producer agent's own scores fed back to itself — \
-that is weak evidence and your confidence should reflect it."""
+that is weak evidence and your confidence should reflect it.
+
+The genre vocabulary is closed and it is code, not codex — you cannot edit it \
+and nothing you write here will. If the evidence says a term is missing (the \
+off-vocabulary count is high, or a family's briefs keep splitting into two \
+sounds that should be scored apart), say so in genre_vocabulary_note and name \
+the label you would add. It is read as a proposal for a person to make as a \
+code change, and an empty string is the right answer nearly every week."""
 
 RETRO_SCHEMA = """{
   "notes": ["observation worth carrying in the codex, <= 200 chars"],
   "tempo_band_edits": {"band_name": [low, high]},
   "avoid_additions": ["descriptor to stop using"],
   "palette_additions": ["new instrumentation palette, <= 120 chars"],
+  "genre_vocabulary_note": "a genre label the evidence says is missing, and why, <= 200 chars — \"\" nearly always",
   "confidence": "low|medium|high",
   "evidence_note": "what the data does and does not support, <= 300 chars"
 }"""
@@ -293,6 +324,18 @@ def weekly_retro(*, days: int = 14, dry_run: bool = False) -> dict:
         learned["notes"] = (learned.get("notes") or [])[-10:] + notes
         changes.append(f"{len(notes)} notes")
 
+    # Its own key rather than appended to learned["notes"], and the divergence
+    # is deliberate: brief_context() renders notes straight into the Music
+    # Director's prompt, so a note saying "add afrobeats" would be an
+    # instruction to write a word the vocabulary does not carry. normalise()
+    # would null it, the brief would lose its genre, and a day of evidence
+    # would be spent proving the retro can reach the Director. The proposal is
+    # for a person; it renders on /genres and goes nowhere near a prompt.
+    proposal = str(result.get("genre_vocabulary_note") or "").strip()[:200]
+    if proposal and proposal != (learned.get("genre_vocabulary_note") or ""):
+        learned["genre_vocabulary_note"] = proposal
+        changes.append("genre vocabulary note")
+
     if not changes:
         return {"changed": False, "reason": "retro proposed no changes",
                 "evidence_note": result.get("evidence_note")}
@@ -344,6 +387,20 @@ def _first_reason(reason: str) -> str:
         if key in head:
             return key
     return head[:40]
+
+
+def _genre_means(rows: dict[str, dict]) -> dict[str, dict]:
+    """The genre rows that have cleared the bar, each keeping its sample count.
+
+    The n is carried into the codex rather than dropped on the way in. The live
+    codex reached v3 rendering "no synths 6.11" with no count anywhere on the
+    row, and that is how an average over two decisions came to read as a
+    finding; a genre label repeats by construction, so the same number here
+    would look solid sooner and be wrong for longer.
+    """
+    return {label: {"mean": row["taste"], "n": row["rated_n"]}
+            for label, row in sorted(rows.items())
+            if row.get("taste") is not None}
 
 
 def _means(vals: dict[str, list[float]]) -> dict[str, float]:
