@@ -68,6 +68,22 @@ td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 th.num{text-align:right}
 td.w{max-width:26rem;white-space:normal;color:var(--dim);line-height:1.45}
 td.tight{white-space:nowrap}
+/* Browser-drawn <audio> controls take their palette from color-scheme above and
+   nothing else. Width is set deliberately rather than 100%: inside td padding a
+   full-width player fights the column algorithm, and Chrome sheds the volume
+   slider and the timer as the element narrows, so this is the width at which a
+   row still gets a scrub bar. */
+audio{max-width:100%;vertical-align:middle}
+td audio{width:15rem;height:2rem}
+.song{background:var(--card);border:1px solid var(--rule);border-radius:4px;
+      padding:.9rem 1rem}
+.song .ttl{font-weight:700;letter-spacing:-.01em}
+.rate{display:flex;gap:.2rem;flex-wrap:wrap;align-items:center;margin:.5rem 0 0}
+.rate button{font:inherit;font-size:.7rem;padding:.15rem .4rem;background:var(--card);
+      color:var(--dim);border:1px solid var(--rule);border-radius:2px;cursor:pointer}
+.rate button:hover{color:var(--ink);border-color:var(--hot)}
+.rate button[aria-pressed=true]{color:var(--hot);border-color:var(--hot)}
+.rate .done{color:var(--faint);font-size:.7rem;margin-left:.35rem}
 a{color:var(--hot)}
 a.q{color:var(--ink);text-decoration:none;border-bottom:1px solid var(--rule)}
 a.q:hover{border-color:var(--hot)}
@@ -98,20 +114,49 @@ pre{background:var(--well);border:1px solid var(--rule);border-radius:4px;
 NAV = [("/", "Overview"), ("/runs", "Runs"), ("/agents", "Agents"),
        ("/codex", "Codex"), ("/files", "Files")]
 
+# Progressive enhancement, and it must stay that way: every rating form posts and
+# redirects on its own. All this buys is not reloading the page — which matters
+# only because a reload stops whatever is playing mid-song. Do not make it
+# required, and do not port the day page's script: that one seeds from
+# localStorage and hydrates over the network because it has no database behind
+# it. This page renders the recorded rating server-side, so it needs neither.
+RATE_JS = """
+document.addEventListener('submit', async ev => {
+  const form = ev.target.closest('form[data-rate]');
+  if (!form || !ev.submitter) return;          // no submitter: let the browser post
+  ev.preventDefault();
+  const score = Number(ev.submitter.value);
+  const out = form.querySelector('.done');
+  form.querySelectorAll('button[name=rating]').forEach(b =>
+    b.setAttribute('aria-pressed', Number(b.value) === score ? 'true' : 'false'));
+  out.textContent = 'saving…';
+  try {
+    const r = await fetch('/ratings', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({clip_id: Number(form.dataset.rate), rating: score})});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    out.textContent = 'rated ' + score + '/10';
+  } catch (e) {
+    out.textContent = 'could not save (' + e.message + ') — reload and try again';
+  }
+});
+"""
+
 
 def esc(v) -> str:
     return html.escape("" if v is None else str(v))
 
 
-def page(title: str, body: str, current: str = "/") -> str:
+def page(title: str, body: str, current: str = "/", *, script: str = "") -> str:
     links = "".join(
         f'<a href="{href}"{" aria-current=page" if href == current else ""}>{esc(label)}</a>'
         for href, label in NAV)
+    tail = f"<script>{script}</script>" if script else ""
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{esc(title)} — The Daily Five</title><style>{CSS}</style></head><body>
 <div class="wrap"><nav><span class="brand">The Daily Five</span>{links}</nav>
-{body}</div></body></html>"""
+{body}</div>{tail}</body></html>"""
 
 
 def stats(*pairs) -> str:

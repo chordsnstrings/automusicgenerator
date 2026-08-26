@@ -55,11 +55,11 @@ The day page shows five songs. The **console** shows the machine that made them:
 
 | Page | Shows |
 |---|---|
-| `/` | runs, learning signal, which brain backs which role |
-| `/runs/<date>` | the themes the Scout found and from which feed, every brief, every job, **all 14 candidates including the nine that did not ship and exactly why**, every brain call with timing |
+| `/` | the latest shipped set, with a player and a rating control; runs, learning signal, which brain backs which role |
+| `/runs/<date>` | the themes the Scout found and from which feed, every brief, every job, **all 14 candidates including the nine that did not ship and exactly why**, every brain call with timing, and a player plus rating control for each delivered song |
 | `/agents` | all eleven roles, their brains, activity and failures |
 | `/codex` | the Style Codex, persona cast, what it has learned, version history |
-| `/files` | everything delivered, by day |
+| `/files` | everything delivered, by day — this is where you listen to the back catalogue |
 
 Run it with `dailyfive serve`. It is the same service that receives Suno's
 callbacks, so there is still one public surface to secure.

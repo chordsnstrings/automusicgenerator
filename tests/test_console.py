@@ -5,14 +5,17 @@ needed, so every page is exercised against an empty database as well as a
 populated one.
 """
 
+import re
 from datetime import date
 
 import pytest
 from fastapi.testclient import TestClient
 
+from dailyfive.config import reload_settings
 from dailyfive.db import session_scope
 from dailyfive.models import (AgentCall, Brief, Clip, Decision, Job, JobState,
-                              Run, RunPhase, Signal, SlotType)
+                              Outcome, Run, RunPhase, Signal, SlotType)
+from dailyfive.storage import open_store
 from dailyfive.web.app import app
 
 PAGES = ["/", "/runs", "/agents", "/codex", "/files"]
@@ -131,3 +134,100 @@ def test_console_escapes_titles_from_the_database(client, run_id, brief_factory)
     body = client.get("/runs/2026-08-27").text
     assert "<script>alert(1)</script>" not in body
     assert "&lt;script&gt;" in body
+
+
+# ── listening ────────────────────────────────────────────────────────────────
+# conftest neutralises AUDIO_STORE, so open_store() falls through to LocalStore
+# and no stored_files row exists anywhere by default. Every test above therefore
+# already exercises the "the bytes are not here" path; these opt in.
+@pytest.fixture
+def delivered(populated, monkeypatch):
+    """The files the ship loop would have written for the shipped clip."""
+    monkeypatch.setenv("AUDIO_STORE", "database")
+    reload_settings()
+    store = open_store()
+    with session_scope() as s:
+        clip = s.query(Clip).filter(Clip.shipped.is_(True)).one()
+        clip_id, run_id, folder = clip.id, clip.run_id, clip.spaces_key
+    for name, ctype in (("master.mp3", "audio/mpeg"), ("master.wav", "audio/wav"),
+                        ("lyrics.txt", "text/plain")):
+        store.put_text("id3", f"{folder}/{name}", content_type=ctype,
+                       clip_id=clip_id, run_id=run_id)
+    return store
+
+
+def test_the_files_page_plays_every_shipped_song(client, delivered):
+    """The console is where you go to listen. A page that lists songs with no
+    way to play them is the bug this pins."""
+    body = client.get("/files").text
+    assert 'src="/files/songs/2026-08-27/01_slow-burn/master.mp3"' in body
+    assert len(re.findall("<audio controls", body)) == 1, "one player per shipped song"
+    assert 'href="/files/songs/2026-08-27/01_slow-burn/master.wav" download' in body
+    assert "wav · mp3 · cover · lyrics · lrc · meta" not in body, \
+        "the old dead text advertised files it never linked to"
+
+
+def test_a_shipped_song_whose_bytes_have_expired_says_so(client, populated):
+    """Retention deletes on expires_at alone and never touches clips, so a
+    shipped song outliving its audio is the expected state, not an error."""
+    r = client.get("/files")
+    assert r.status_code == 200
+    assert "<audio controls" not in r.text
+    assert 'src="/files/' not in r.text
+    assert "no audio kept" in r.text
+
+
+def test_the_overview_offers_todays_songs_with_a_rating_control(client, delivered):
+    body = client.get("/").text
+    assert "Slow Burn in June" in body
+    assert "<audio controls" in body, "the daily habit is hear today's five, then rate them"
+    assert len(re.findall(r'name="rating"', body)) == 10
+    assert 'action="/console/rate"' in body
+
+
+def test_rating_from_the_console_works_without_javascript(client, populated):
+    with session_scope() as s:
+        clip_id = s.query(Clip).filter(Clip.shipped.is_(True)).one().id
+    r = client.post("/console/rate", follow_redirects=False,
+                    data={"clip_id": clip_id, "rating": 8, "back": "/runs/2026-08-27"})
+    assert r.status_code == 303
+    assert r.headers["location"] == f"/runs/2026-08-27#clip{clip_id}"
+    with session_scope() as s:
+        assert s.query(Outcome).filter(Outcome.clip_id == clip_id).one().rating == 8
+
+
+def test_rating_never_redirects_off_this_origin(client, populated):
+    """`back` is a form field, and "//host" is a protocol-relative URL."""
+    with session_scope() as s:
+        clip_id = s.query(Clip).filter(Clip.shipped.is_(True)).one().id
+    r = client.post("/console/rate", follow_redirects=False,
+                    data={"clip_id": clip_id, "rating": 3, "back": "//evil.example"})
+    assert r.headers["location"] == f"/#clip{clip_id}"
+
+
+def test_a_recorded_rating_is_rendered_by_the_server(client, populated):
+    """No localStorage seeding and no hydration pass — the console has the
+    database, so the truth is in the HTML before any script runs."""
+    with session_scope() as s:
+        clip_id = s.query(Clip).filter(Clip.shipped.is_(True)).one().id
+    client.post("/console/rate", data={"clip_id": clip_id, "rating": 9})
+    body = client.get("/runs/2026-08-27").text
+    assert "rated 9/10" in body
+    assert 'value="9" aria-pressed="true"' in body
+
+
+def test_the_delivered_day_page_is_linked_only_when_it_exists(client, delivered):
+    """Under Spaces it is private and under LocalStore it is a path on a disk,
+    so a constructed href would 404 in two of three configurations."""
+    key = "songs/2026-08-27/index.html"
+    assert f'href="/files/{key}"' not in client.get("/files").text
+    delivered.put_text("<html></html>", key, content_type="text/html")
+    assert f'href="/files/{key}"' in client.get("/files").text
+    assert f'href="/files/{key}"' in client.get("/runs/2026-08-27").text
+
+
+def test_the_files_page_never_preloads_three_hundred_sources(client, delivered):
+    """This page can list 300 songs; preload="metadata" would open 300 sources
+    before anyone pressed play."""
+    assert 'preload="none"' in client.get("/files").text
+    assert 'preload="metadata"' not in client.get("/files").text

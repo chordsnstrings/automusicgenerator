@@ -556,11 +556,11 @@ by the same process that receives Suno's callbacks:
 
 | Page | Shows |
 |---|---|
-| `/` | runs, learning signal, which brain backs which role and whether its key is present |
-| `/runs/<date>` | the phase timeline, the themes the Scout found and from which feed, every brief with its clearance verdict, every job with callbacks-vs-polls, **all 14 candidates including the nine that did not ship and exactly why**, and every brain call with timing |
+| `/` | the latest shipped set — play it and rate it here — then runs, learning signal, which brain backs which role and whether its key is present |
+| `/runs/<date>` | the phase timeline, the themes the Scout found and from which feed, every brief with its clearance verdict, every job with callbacks-vs-polls, **all 14 candidates including the nine that did not ship and exactly why**, and every brain call with timing, and a player, download links and a rating control for each delivered song |
 | `/agents` | all eleven roles, their brains, 30-day activity and failures — including the four with no brain at all |
 | `/codex` | the Style Codex, persona cast and registration state, what it has learned, full version history |
-| `/files` | everything delivered, by day |
+| `/files` | everything delivered, by day, each with a player and a link to every file that is actually still stored |
 
 Every brain call is recorded in an `agent_calls` row — role, provider, model,
 duration, characters in and out, and the error if it failed. That table is what

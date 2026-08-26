@@ -22,12 +22,13 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
-from sqlalchemy import select
+from fastapi.responses import (HTMLResponse, JSONResponse, RedirectResponse,
+                               StreamingResponse)
+from sqlalchemy import LargeBinary, func, select
 
 from ..config import settings
 from ..db import init_db, session_scope
-from ..models import Clip, Job, Outcome, Run
+from ..models import Clip, Job, Outcome, Run, StoredFile, utcnow
 
 log = logging.getLogger(__name__)
 
@@ -213,6 +214,11 @@ _RATE_MAX = 120
 _rate_hits: dict[str, list[float]] = {}
 
 
+def _client_ip(request: Request) -> str:
+    return (request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+            or (request.client.host if request.client else "unknown"))
+
+
 def _rate_limited(ip: str) -> bool:
     import time
     now = time.time()
@@ -238,9 +244,7 @@ async def submit_rating(request: Request) -> JSONResponse:
     Weigh that against the friction of an auth step on a control you need to use
     every morning in under thirty seconds.
     """
-    client_ip = (request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-                 or (request.client.host if request.client else "unknown"))
-    if _rate_limited(client_ip):
+    if _rate_limited(_client_ip(request)):
         raise HTTPException(status_code=429, detail="too many ratings; try later")
 
     body = await request.json()
@@ -287,6 +291,33 @@ def existing_ratings(clip_ids: str = "") -> dict:
     return {"ratings": {str(cid): rating for cid, rating in rows}}
 
 
+CHUNK = 1 << 20
+
+
+def _chunks(key: str, start: int, end: int):
+    """Yield the requested extent a slice at a time.
+
+    Reading `data` as a whole column is what made this endpoint dangerous: it is
+    an undeferred LargeBinary, a master.wav is tens of MB, and on Postgres a
+    bytea arrives hex-encoded, so one 60 MB row cost ~180 MB of a 512 MB box
+    before the range was even parsed. substr() reads only the slice asked for on
+    both dialects. A fresh session per slice rather than one held open for the
+    whole response: a listener on bad hotel wifi would otherwise hold a pooled
+    connection for minutes, and the pool is 15.
+    """
+    pos = start
+    while pos <= end:
+        n = min(CHUNK, end - pos + 1)
+        with session_scope() as s:
+            blob = s.execute(
+                select(func.substr(StoredFile.data, pos + 1, n, type_=LargeBinary))
+                .where(StoredFile.key == key)).scalar_one_or_none()
+        if not blob:                  # purged mid-transfer; stop cleanly
+            return
+        yield blob
+        pos += len(blob)
+
+
 @app.get("/files/{key:path}")
 def serve_file(key: str, request: Request) -> Response:
     """Stream a delivered file out of the database.
@@ -296,51 +327,72 @@ def serve_file(key: str, request: Request) -> Response:
     scrub bar dead — the player can only ever play from the start. Chrome will
     also refuse to show a duration for a non-ranged stream of unknown length.
     """
-    from ..models import StoredFile
-
     with session_scope() as s:
-        row = s.query(StoredFile).filter(StoredFile.key == key).one_or_none()
-        if row is None:
-            raise HTTPException(status_code=404, detail="no such file")
-        data, ctype, etag = row.data, row.content_type, row.sha256
+        meta = s.execute(
+            select(func.length(StoredFile.data), StoredFile.content_type,
+                   StoredFile.sha256)
+            .where(StoredFile.key == key,
+                   (StoredFile.expires_at.is_(None))
+                   | (StoredFile.expires_at > utcnow()))).one_or_none()
+    if meta is None:
+        raise HTTPException(status_code=404, detail="no such file")
+    # func.length over size_bytes so the advertised length cannot drift from the
+    # bytes substr() will actually hand back.
+    total, ctype, etag = int(meta[0] or 0), meta[1], meta[2]
 
-    total = len(data)
+    # A quote in the name would close the header's quoted-string early.
+    name = key.rsplit("/", 1)[-1].replace('"', "")
     headers = {
         "Accept-Ranges": "bytes",
-        "Content-Disposition": f'inline; filename="{key.rsplit("/", 1)[-1]}"',
+        "Content-Disposition": f'inline; filename="{name}"',
         # Immutable within its retention window, so let the browser keep it.
         "Cache-Control": "private, max-age=86400",
+        # This origin serves LLM-authored text/html out of stored_files beside
+        # the console, so a guessed content type is a scripting bug.
+        "X-Content-Type-Options": "nosniff",
     }
     if etag:
         headers["ETag"] = f'"{etag}"'
+        # Answered before a single byte is read — that is the whole point of
+        # doing it here. If-Range needs no handling for the same reason the
+        # validator is trustworthy: the ETag is the sha256 of the bytes,
+        # recomputed on every write, so it cannot survive a change to them.
         if request.headers.get("if-none-match") == f'"{etag}"':
             return Response(status_code=304, headers=headers)
 
     rng = request.headers.get("range")
-    if not rng or not rng.startswith("bytes="):
-        headers["Content-Length"] = str(total)
-        return Response(content=data, media_type=ctype, headers=headers)
-
-    spec = rng[6:].split(",")[0].strip()
-    start_s, _, end_s = spec.partition("-")
-    try:
-        if start_s:
-            start = int(start_s)
-            end = int(end_s) if end_s else total - 1
+    start, end = 0, total - 1
+    partial = False
+    if rng and rng.startswith("bytes="):
+        # Media elements never ask for more than one range, and Content-Range
+        # states honestly which one came back.
+        spec = rng[6:].split(",")[0].strip()
+        start_s, _, end_s = spec.partition("-")
+        try:
+            if start_s:
+                start = int(start_s)
+                end = int(end_s) if end_s else total - 1
+            else:
+                # A suffix range: the last N bytes.
+                start, end = max(0, total - int(end_s)), total - 1
+        except ValueError:
+            # RFC 9110 §14.2: an unparseable Range is ignored, not refused. A
+            # 416 here would break a client over a header it could survive.
+            start, end, partial = 0, total - 1, False
         else:
-            # A suffix range: the last N bytes.
-            start, end = max(0, total - int(end_s)), total - 1
-    except ValueError:
-        raise HTTPException(status_code=416, detail="malformed range")
+            if start >= total or start > end:
+                return Response(status_code=416,
+                                headers={**headers, "Content-Range": f"bytes */{total}"})
+            end = min(end, total - 1)
+            partial = True
 
-    if start >= total or start > end:
-        return Response(status_code=416,
-                        headers={**headers, "Content-Range": f"bytes */{total}"})
-    end = min(end, total - 1)
-    chunk = data[start:end + 1]
-    headers["Content-Range"] = f"bytes {start}-{end}/{total}"
-    headers["Content-Length"] = str(len(chunk))
-    return Response(content=chunk, status_code=206, media_type=ctype, headers=headers)
+    length = max(0, end - start + 1)
+    headers["Content-Length"] = str(length)
+    if partial:
+        headers["Content-Range"] = f"bytes {start}-{end}/{total}"
+    return StreamingResponse(_chunks(key, start, end),
+                             status_code=206 if partial else 200,
+                             media_type=ctype, headers=headers)
 
 
 @app.get("/storage")
@@ -397,6 +449,44 @@ def console_codex() -> str:
 def console_files() -> str:
     from . import views
     return views.files_page()
+
+
+@app.post("/console/rate")
+async def console_rate(request: Request) -> Response:
+    """The no-JavaScript path for the console's rating buttons.
+
+    Form-encoded rather than JSON because a plain <form> is what still works when
+    the enhancement script does not run; the body is parsed by hand because
+    adding python-multipart as a dependency to read two integers is not a trade
+    worth making. POST-redirect-GET so a refresh does not re-submit.
+    """
+    from urllib.parse import parse_qs
+
+    if _rate_limited(_client_ip(request)):
+        raise HTTPException(status_code=429, detail="too many ratings; try later")
+
+    form = parse_qs((await request.body()).decode("utf-8", "replace"))
+    try:
+        clip_id = int(form.get("clip_id", [""])[0])
+        rating = int(form.get("rating", [""])[0])
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="clip_id and rating must be integers")
+    if not 1 <= rating <= 10:
+        raise HTTPException(status_code=400, detail="rating must be 1-10")
+
+    with session_scope() as s:
+        if s.get(Clip, clip_id) is None:
+            raise HTTPException(status_code=404, detail="no such clip")
+
+    from ..archivist import rate
+    rate(clip_id, rating)
+
+    # Never redirect off this origin on the strength of a form field: "//host"
+    # is a protocol-relative URL, not a path on this site.
+    back = form.get("back", ["/"])[0]
+    if not back.startswith("/") or back.startswith("//"):
+        back = "/"
+    return RedirectResponse(f"{back}#clip{clip_id}", status_code=303)
 
 
 @app.get("/", response_class=HTMLResponse)
