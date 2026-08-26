@@ -114,11 +114,15 @@ def _run_row(s, r: Run) -> list[str]:
     cut = sum(1 for c in clips if c.qc_verdict == "fail")
     rated = sum(1 for c in clips if c.outcome and c.outcome.rating is not None)
     kind = {"shipped": "ok", "failed": "bad"}.get(r.phase.value, "hot")
+    if r.phase.value == "shipped" and (r.notes or {}).get("shortfall"):
+        kind = "hot"          # green would claim a clean day it did not have
     return [
         f'<a class="q" href="/runs/{r.run_date.isoformat()}">{esc(r.run_date)}</a>',
         pill(r.phase.value, kind),
         f'<span class="num">{len(clips)}</span>',
-        f'<span class="num">{shipped}</span>',
+        (f'<span class="num">{shipped}</span>'
+         + (' <span class="pill p-bad">short</span>'
+            if (r.notes or {}).get("shortfall") else "")),
         f'<span class="num">{cut}</span>',
         f'<span class="num">{rated}</span>',
         f'<span class="num">{r.credits_spent if r.credits_spent is not None else "—"}</span>',
@@ -252,6 +256,7 @@ def run_detail(run_date: date) -> str | None:
               ("brain calls", len(calls)),
               ("credits", run.credits_spent if run.credits_spent is not None else "—")),
         _phase_flow(run.phase),
+        _shortfall_note(run),
         "<h2>What the Scout found</h2>",
         table(["#", "Theme", "Feeling", "Lead", "Conf.", "Sources", "Evidence"],
               sig_rows, empty="no signals recorded", num_cols={0, 4}),
@@ -280,6 +285,16 @@ def run_detail(run_date: date) -> str | None:
         table(["Song", "Spaces key", "Master"], files, empty="nothing delivered yet"),
     ]
     return page(str(run_date), "".join(body), "/runs")
+
+
+def _shortfall_note(run: Run) -> str:
+    """A run that shipped four against a contract of five must not read as clean."""
+    sf = (run.notes or {}).get("shortfall")
+    if not sf:
+        return ""
+    causes = "".join(f"<div>{esc(c)}</div>" for c in sf.get("causes", []))
+    return (f'<div class="note" style="border-left-color:var(--bad)">'
+            f'<span>Short of contract</span>{causes}</div>')
 
 
 def _qc_cell(q: dict) -> str:

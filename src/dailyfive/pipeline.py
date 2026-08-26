@@ -352,8 +352,52 @@ def _phase_judge(run_id: int, cfg) -> RunPhase:
         s.execute(Decision.__table__.delete().where(Decision.run_id == run_id))
         s.add(Decision(run_id=run_id, rationale=decision.get("rationale", ""),
                        picks=decision["picks"], rejections=decision["rejections"]))
+    _record_shortfall(run_id, decision["picks"], cfg)
     log.info("judge: picked %d", len(picked))
     return _advance(run_id, RunPhase.JUDGED)
+
+
+def _record_shortfall(run_id: int, picks: list[dict], cfg) -> None:
+    """Say loudly when a lane could not be filled.
+
+    A run that ships four songs against a contract of five is not a failure —
+    the four are real — but it is not a success either, and it must not read
+    like one. The cause is always upstream: a brief dropped by Clearance, a
+    Director that under-delivered, or a lane where QC took too many.
+    """
+    got = {"full": 0, "short": 0}
+    for p in picks:
+        got[p.get("slot_type", "full")] = got.get(p.get("slot_type", "full"), 0) + 1
+    want = {"full": cfg.full_slots, "short": cfg.short_slots}
+    gaps = {k: want[k] - got.get(k, 0) for k in want if got.get(k, 0) < want[k]}
+    if not gaps:
+        return
+
+    with session_scope() as s:
+        briefs = s.execute(select(Brief).where(Brief.run_id == run_id)).scalars().all()
+        clips = s.execute(select(Clip).where(Clip.run_id == run_id)).scalars().all()
+        causes = []
+        for slot, missing in gaps.items():
+            st = SlotType(slot)
+            dropped = [b for b in briefs if b.slot_type is st and b.dropped_reason]
+            cut = [c for c in clips if c.slot_type is st and c.qc_verdict == "fail"]
+            planned = cfg.full_briefs if slot == "full" else cfg.short_briefs
+            actual = len([b for b in briefs if b.slot_type is st])
+            bits = [f"{missing} {slot} slot{'s' if missing > 1 else ''} unfilled"]
+            if actual < planned:
+                bits.append(f"the Director produced {actual} of {planned} briefs")
+            if dropped:
+                bits.append(f"{len(dropped)} brief(s) dropped: "
+                            + "; ".join((b.dropped_reason or "")[:90] for b in dropped))
+            if cut:
+                bits.append(f"{len(cut)} clip(s) cut by QC")
+            causes.append(" — ".join(bits))
+
+        run = s.get(Run, run_id)
+        run.notes = {**(run.notes or {}), "shortfall": {"gaps": gaps, "causes": causes}}
+
+    for c in causes:
+        log.warning("SHORTFALL: %s", c)
 
 
 def _phase_ship(run_id: int, cfg, *, skip_art: bool = False) -> RunPhase:

@@ -91,3 +91,39 @@ def test_brief_dict_round_trips_the_fields_agents_need(run_id, brief_factory):
     for key in ("title", "theme", "slot_type", "bpm", "style_string", "lyrics"):
         assert key in d
     assert d["slot_type"] == "full" and d["bpm"] == 84
+
+
+def test_a_lane_that_cannot_be_filled_is_recorded_not_silent(run_id, brief_factory):
+    """Shipping four against a contract of five must not read as a clean day."""
+    from dailyfive.config import settings
+    from dailyfive.models import Clip, Job, JobState, SlotType
+
+    bid = brief_factory(slot="short")
+    with session_scope() as s:
+        s.get(Brief, bid).dropped_reason = "clearance: drug trafficking narrative"
+        j = Job(run_id=run_id, brief_id=bid, idempotency_key="k9",
+                state=JobState.MIRRORED, payload={})
+        s.add(j); s.flush()
+        s.add(Clip(run_id=run_id, job_id=j.id, brief_id=bid, audio_id="x",
+                   slot_type=SlotType.SHORT, qc_verdict="fail",
+                   qc_reason="38% of the track is silence"))
+
+    pl._record_shortfall(run_id, [{"clip_id": 1, "slot_type": "full"}], settings())
+
+    with session_scope() as s:
+        sf = (s.get(Run, run_id).notes or {}).get("shortfall")
+    assert sf, "an unfilled lane must be recorded on the run"
+    assert sf["gaps"]["short"] == settings().short_slots
+    joined = " ".join(sf["causes"])
+    assert "drug trafficking" in joined, "the cause must name the dropped brief"
+    assert "cut by QC" in joined
+
+
+def test_no_shortfall_note_when_every_lane_fills(run_id):
+    from dailyfive.config import settings
+    cfg = settings()
+    picks = ([{"clip_id": i, "slot_type": "full"} for i in range(cfg.full_slots)]
+             + [{"clip_id": 100 + i, "slot_type": "short"} for i in range(cfg.short_slots)])
+    pl._record_shortfall(run_id, picks, cfg)
+    with session_scope() as s:
+        assert not (s.get(Run, run_id).notes or {}).get("shortfall")
