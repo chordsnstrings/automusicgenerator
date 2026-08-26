@@ -178,3 +178,46 @@ def test_rank_orders_progress():
     assert _rank(JobState.SUCCESS) > _rank(JobState.PENDING)
     assert _rank(JobState.MIRRORED) > _rank(JobState.SUCCESS)
     assert _rank(JobState.FAILED) == 99
+
+
+def test_a_later_delivery_fills_in_what_the_earlier_one_lacked(run_id, brief_factory):
+    """FIRST_SUCCESS often has no duration; SUCCESS does. Skipping the repeat
+    outright froze the gap and shipped a null duration in meta.json."""
+    bid = brief_factory()
+    job_id = _queue(run_id, bid)
+    c = Conductor(run_id, client=FakeSuno())
+    c.submit_all()
+
+    c.ingest_record(job_id, {"status": "FIRST_SUCCESS", "response": {"sunoData": [
+        {"id": "audio-0", "stream_audio_url": "https://x/stream.mp3",
+         "title": "Working Title"}]}})
+    with session_scope() as s:
+        clip = s.query(Clip).filter(Clip.job_id == job_id).one()
+        assert clip.duration_s is None
+
+    c.ingest_record(job_id, {"status": "SUCCESS", "response": {"sunoData": [
+        {"id": "audio-0", "audio_url": "https://x/final.mp3", "duration": 253.8,
+         "title": "Spent Tomorrow Twice", "tags": "dark rnb"}]}})
+    with session_scope() as s:
+        clips = s.query(Clip).filter(Clip.job_id == job_id).all()
+        assert len(clips) == 1, "still one row, not two"
+        clip = clips[0]
+        assert clip.duration_s == 253.8
+        assert clip.source_audio_url == "https://x/final.mp3"
+        assert clip.title == "Spent Tomorrow Twice"
+        assert clip.tags == "dark rnb"
+
+
+def test_a_refresh_never_clears_a_value_it_already_has(run_id, brief_factory):
+    bid = brief_factory()
+    job_id = _queue(run_id, bid)
+    c = Conductor(run_id, client=FakeSuno())
+    c.submit_all()
+    c.ingest_record(job_id, {"status": "SUCCESS", "response": {"sunoData": [
+        {"id": "audio-0", "audio_url": "https://x/final.mp3", "duration": 253.8,
+         "title": "Real Title"}]}})
+    c.ingest_record(job_id, {"status": "SUCCESS", "response": {"sunoData": [
+        {"id": "audio-0"}]}})
+    with session_scope() as s:
+        clip = s.query(Clip).filter(Clip.job_id == job_id).one()
+        assert clip.duration_s == 253.8 and clip.title == "Real Title"

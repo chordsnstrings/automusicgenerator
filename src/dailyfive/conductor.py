@@ -249,10 +249,17 @@ class Conductor:
 
     def _record_clips(self, job_id: int, brief_id: int, run_id: int,
                       raw_clips: list[dict]) -> None:
-        """Insert clip rows, ignoring ones already seen.
+        """Insert clip rows, and refresh ones already seen.
 
-        FIRST_SUCCESS then SUCCESS means the first clip arrives twice; the
-        unique constraint on (job_id, audio_id) is what makes that harmless.
+        FIRST_SUCCESS then SUCCESS means the first clip arrives twice, so the
+        unique constraint on (job_id, audio_id) stops a duplicate row. But the
+        two deliveries are not identical: the earlier one often has no duration
+        and no final audio URL, because the render was not finished. Skipping
+        the repeat outright therefore froze whatever was missing the first time
+        — a shipped song reached its meta.json with a null duration.
+
+        So a repeat updates the fields that have since become available, and
+        never overwrites something real with a None.
         """
         from .providers.suno import SunoClip
 
@@ -262,9 +269,17 @@ class Conductor:
             payload = dict(job.payload)
             existing = {c.audio_id for c in job.clips}
 
+            by_audio = {c.audio_id: c for c in job.clips}
+
             for idx, raw in enumerate(raw_clips):
                 parsed = SunoClip.from_payload(raw)
-                if not parsed.audio_id or parsed.audio_id in existing:
+                if not parsed.audio_id:
+                    continue
+                if parsed.audio_id in existing:
+                    row = by_audio.get(parsed.audio_id)
+                    if row is not None and _refresh(row, parsed):
+                        log.info("job %d: refreshed clip %s with late-arriving data",
+                                 job_id, parsed.audio_id)
                     continue
                 existing.add(parsed.audio_id)
                 s.add(Clip(
@@ -393,6 +408,24 @@ def _age_seconds(when: datetime) -> float:
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
     return (utcnow() - when).total_seconds()
+
+
+def _refresh(row: "Clip", parsed) -> bool:
+    """Fill in anything the earlier delivery did not have. Never clears a value."""
+    changed = False
+    for attr, value in (("duration_s", parsed.duration),
+                        ("source_audio_url", parsed.audio_url),
+                        ("source_image_url", parsed.image_url),
+                        ("tags", parsed.tags),
+                        ("title", parsed.title)):
+        if value in (None, "") or getattr(row, attr) == value:
+            continue
+        # A real audio URL supersedes the stream URL recorded at FIRST_SUCCESS.
+        if attr == "source_audio_url" and row.source_audio_url and not parsed.audio_url:
+            continue
+        setattr(row, attr, value)
+        changed = True
+    return changed
 
 
 _ORDER = [JobState.QUEUED, JobState.SUBMITTED, JobState.PENDING, JobState.TEXT_SUCCESS,

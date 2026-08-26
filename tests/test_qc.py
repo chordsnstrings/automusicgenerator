@@ -89,3 +89,38 @@ def test_trim_points_are_conservative():
 def test_no_trim_when_edges_are_tight():
     assert trim_points(QCMetrics(duration_s=100.0, lead_silence_s=0.2,
                                  tail_silence_s=0.3)) == (0.0, None)
+
+
+def test_decoded_duration_beats_a_lying_container_header():
+    """Suno's streaming MP3s over-report length — one by 45%.
+
+    Trusting the header breaks the duration gate in both directions: a
+    truncated song passes, and a short-form cut is rejected for a length it
+    does not have.
+    """
+    from dailyfive.qc import _decoded_duration
+    stderr = ("frame= 100 time=00:01:00.00 bitrate=N/A\n"
+              "frame= 200 time=00:04:13.80 bitrate=N/A\n")
+    assert _decoded_duration(stderr) == 253.8
+
+
+def test_decoded_duration_is_none_when_ffmpeg_printed_no_progress():
+    from dailyfive.qc import _decoded_duration
+    assert _decoded_duration("no timestamps here") is None
+
+
+def test_a_header_far_from_the_decode_is_recorded_as_a_note():
+    m = QCMetrics(duration_s=253.8, container_duration_s=369.6, lufs_i=-14.4,
+                  true_peak_db=-2.0, file_bytes=5_000_000, measured=True)
+    v, reasons = verdict(m, slot_type="full")
+    assert v == "pass", "a lying header is not itself a reason to reject the audio"
+    assert m.duration_s == 253.8, "the decode must win"
+
+
+def test_the_duration_gate_uses_the_decoded_value():
+    """A 47s song whose header claims 200s must still be cut."""
+    m = QCMetrics(duration_s=47.0, container_duration_s=200.0, lufs_i=-14.0,
+                  true_peak_db=-1.0, file_bytes=5_000_000, measured=True)
+    v, reasons = verdict(m, slot_type="full")
+    assert v == "fail"
+    assert any("47.0s under the 90s floor" in r for r in reasons)

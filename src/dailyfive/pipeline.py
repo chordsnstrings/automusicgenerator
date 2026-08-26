@@ -459,6 +459,21 @@ def _phase_ship(run_id: int, cfg, *, skip_art: bool = False) -> RunPhase:
         master = master_wav(source, folder / "master.wav", metrics)
         mp3 = encode_mp3(master, folder / "master.mp3")
 
+        # Re-measure the file that is actually being delivered. The gate ran on
+        # the mirrored stream, whose container header Suno inflates; the
+        # metadata must describe the master, not the thing QC happened to see.
+        try:
+            delivered = measure(master)
+            if delivered.measured:
+                qc = {**qc, **delivered.as_dict(), "measured_on": "master.wav"}
+                with session_scope() as s:
+                    clip = s.get(Clip, clip_id)
+                    clip.duration_s = delivered.duration_s
+                    clip.qc = qc
+                clip_dict["duration_s"] = delivered.duration_s
+        except Exception as exc:
+            log.warning("could not re-measure the delivered master: %s", exc)
+
         cover = None
         if not skip_art:
             cover = cover_art(brief, folder / "cover.jpg")

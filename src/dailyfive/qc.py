@@ -47,6 +47,7 @@ class FFmpegMissing(RuntimeError):
 @dataclass
 class QCMetrics:
     duration_s: float | None = None
+    container_duration_s: float | None = None
     lufs_i: float | None = None
     true_peak_db: float | None = None
     peak_db: float | None = None
@@ -70,7 +71,16 @@ def have_ffmpeg() -> bool:
 
 
 def measure(path: Path | str) -> QCMetrics:
-    """Everything measurable about one audio file, in two subprocess calls."""
+    """Everything measurable about one audio file, in two subprocess calls.
+
+    ``duration_s`` comes from decoding, never from the container header.
+    Suno's streaming MP3s carry inflated headers — one measured here claimed
+    369.6s for 253.8s of audio, a 45% over-report — which would silently break
+    the duration gate in both directions: a truncated song passing, and a
+    short-form cut rejected for a length it does not have. The header is kept
+    as ``container_duration_s`` and the gap is recorded, because a large one is
+    itself a signal that the mirrored file is not what it claims to be.
+    """
     path = Path(path)
     m = QCMetrics()
     if not path.is_file():
@@ -85,6 +95,18 @@ def measure(path: Path | str) -> QCMetrics:
 
     _probe(path, m)
     _analyse(path, m)
+
+    # Decode wins over the header, always.
+    if m.duration_s is not None:
+        drift = abs((m.container_duration_s or m.duration_s) - m.duration_s)
+        if m.container_duration_s is not None and drift > 2.0:
+            m.notes.append(
+                f"container header claims {m.container_duration_s:.1f}s but the file "
+                f"decodes to {m.duration_s:.1f}s — trusting the decode")
+    elif m.container_duration_s is not None:
+        m.duration_s = m.container_duration_s
+        m.notes.append("could not decode a duration; falling back to the container header")
+
     m.measured = m.duration_s is not None
     return m
 
@@ -98,7 +120,7 @@ def _probe(path: Path, m: QCMetrics) -> None:
             capture_output=True, text=True, timeout=120, check=False).stdout
         data = json.loads(out or "{}")
         dur = (data.get("format") or {}).get("duration")
-        m.duration_s = round(float(dur), 3) if dur else None
+        m.container_duration_s = round(float(dur), 3) if dur else None
         streams = data.get("streams") or []
         if streams:
             m.sample_rate = _int(streams[0].get("sample_rate"))
@@ -107,6 +129,7 @@ def _probe(path: Path, m: QCMetrics) -> None:
         m.notes.append(f"ffprobe failed: {exc}")
 
 
+_RE_TIME = re.compile(r"time=(\d+):(\d\d):(\d\d(?:\.\d+)?)")
 _RE_I = re.compile(r"^\s*I:\s*(-?[\d.]+)\s*LUFS", re.M)
 _RE_TP = re.compile(r"True peak:\s*\n\s*Peak:\s*(-?[\d.]+|-inf)\s*dBFS", re.M)
 _RE_PEAK = re.compile(r"Peak level dB:\s*(-?[\d.]+|-inf)", re.M)
@@ -119,8 +142,11 @@ _RE_SIL_END = re.compile(r"silence_end:\s*([\d.]+)\s*\|\s*silence_duration:\s*([
 def _analyse(path: Path, m: QCMetrics) -> None:
     """One ffmpeg pass carrying all three filters. stderr holds the results."""
     try:
+        # Progress stats are deliberately left on: the final "time=" is the
+        # decoded duration, and this pass already decodes the whole file, so
+        # the authoritative number costs nothing extra.
         proc = subprocess.run(
-            ["ffmpeg", "-nostats", "-hide_banner", "-i", str(path),
+            ["ffmpeg", "-hide_banner", "-i", str(path),
              "-af", "ebur128=peak=true,astats=metadata=1:reset=0,"
                     "silencedetect=noise=-50dB:d=0.4",
              "-f", "null", "-"],
@@ -130,6 +156,7 @@ def _analyse(path: Path, m: QCMetrics) -> None:
         return
 
     err = proc.stderr or ""
+    m.duration_s = _decoded_duration(err)
     m.lufs_i = _f(_last(_RE_I, err))
     m.true_peak_db = _f(_last(_RE_TP, err))
     m.peak_db = _f(_last(_RE_PEAK, err))
@@ -143,6 +170,15 @@ def _analyse(path: Path, m: QCMetrics) -> None:
         m.notes.append("true peak unavailable, using astats peak level")
 
     _silence(err, m)
+
+
+def _decoded_duration(err: str) -> float | None:
+    """The last timestamp ffmpeg reported while decoding the whole file."""
+    found = _RE_TIME.findall(err)
+    if not found:
+        return None
+    h, mnt, sec = found[-1]
+    return round(int(h) * 3600 + int(mnt) * 60 + float(sec), 3)
 
 
 def _silence(err: str, m: QCMetrics) -> None:
