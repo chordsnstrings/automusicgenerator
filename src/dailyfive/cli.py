@@ -433,6 +433,17 @@ def cmd_remeta(args) -> int:
     return 0
 
 
+def cmd_strip_wav(args) -> int:
+    """Remove the INFO chunk from WAVs delivered before the master dropped it."""
+    from .storage import strip_wav_metadata
+    init_db()
+    result = strip_wav_metadata(dry_run=args.dry_run, limit=args.limit)
+    print(json.dumps(result, indent=2, default=str))
+    if args.dry_run and result["stripped"]:
+        print(f"\n  dry run — {result['stripped']} file(s) would be rewritten")
+    return 0
+
+
 def cmd_credits(args) -> int:
     from .providers.suno import SunoClient
     print(f"suno credits: {SunoClient().credits()}")
@@ -645,6 +656,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--dry-run", action="store_true",
                    help="report which slots are due without firing any")
     s.set_defaults(fn=cmd_scheduler)
+
+    s = sub.add_parser("strip-wav", help="remove metadata from delivered WAVs")
+    s.add_argument("--dry-run", action="store_true",
+                   help="report what would change without writing")
+    s.add_argument("--limit", type=int, default=0, help="stop after N files")
+    s.set_defaults(fn=cmd_strip_wav)
 
     s = sub.add_parser("init-db", help="create tables and seed the codex")
     s.set_defaults(fn=cmd_initdb)

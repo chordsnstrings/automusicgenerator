@@ -61,6 +61,21 @@ def slugify(text: str, *, limit: int = 48) -> str:
     return (slug or "untitled")[:limit].rstrip("-")
 
 
+# The delivery master carries no metadata at all, and it takes both of these to
+# get there. `-map_metadata -1` drops what the source brought: Suno stamps every
+# WAV it renders with an INFO comment naming itself, the render timestamp and
+# the internal clip id, and ffmpeg copies that chunk forward by default, so a
+# file handed to a distributor announced where it came from. `-bitexact` stops
+# ffmpeg replacing it with its own ISFT software tag — without it the LIST chunk
+# is emptied and then immediately rewritten with the encoder version, which is
+# the confusing half: the strip appears not to have worked.
+#
+# The MP3 is tagged on purpose and is not covered by this. A player needs a
+# title and an artist; a delivery master needs nothing, and the WAV is the one
+# that gets ingested by something automated.
+WAV_NO_METADATA = ["-map_metadata", "-1", "-bitexact"]
+
+
 def master_wav(source: Path, dest: Path, metrics: QCMetrics) -> Path:
     """Trim, fade, and otherwise leave the level alone.
 
@@ -81,7 +96,8 @@ def master_wav(source: Path, dest: Path, metrics: QCMetrics) -> Path:
     cmd += ["-i", str(source)]
     if end is not None:
         cmd += ["-to", f"{max(0.5, end - start):.3f}"]
-    cmd += ["-af", ",".join(filters), "-c:a", "pcm_s16le", "-ar", "44100", str(dest)]
+    cmd += ["-af", ",".join(filters), "-c:a", "pcm_s16le", "-ar", "44100"]
+    cmd += WAV_NO_METADATA + [str(dest)]
 
     _run(cmd, f"mastering {dest.name}")
     return dest

@@ -466,3 +466,95 @@ class Spaces:
             raise ProviderError(PROVIDER,
                                 f"cannot reach bucket {self.bucket!r}: {exc}",
                                 retryable=False) from exc
+
+
+def strip_wav_metadata(dry_run: bool = False, limit: int = 0) -> dict:
+    """Remove the INFO chunk from WAV rows written before the master stopped
+    carrying one.
+
+    Suno stamps every WAV it renders with a comment naming itself, the render
+    timestamp and its internal clip id, and ffmpeg copied that chunk forward
+    until WAV_NO_METADATA was added to the mastering command. Every file
+    delivered before that announces where it came from, which is the one thing a
+    delivery master should not do.
+
+    This rewrites `data`, which is the only copy of the audio this system holds
+    — Suno deletes its own after fifteen days and there is no bucket behind
+    this. So the row is only updated when ffmpeg's own hash of the decoded audio
+    stream is byte-identical before and after. A container rewrite that changed
+    a single sample would fail that comparison and be discarded rather than
+    stored; the operation is a chunk edit, and this proves it stayed one.
+
+    One file at a time, through a temporary file rather than memory, and columns
+    selected by name so no other row's `data` is ever loaded.
+    """
+    import subprocess
+    import tempfile
+
+    from sqlalchemy import select, update
+
+    from .db import session_scope
+    from .models import StoredFile
+
+    def audio_hash(path: Path) -> str | None:
+        r = subprocess.run(["ffmpeg", "-v", "error", "-i", str(path),
+                            "-map", "0:a", "-f", "md5", "-"],
+                           capture_output=True, text=True)
+        return r.stdout.strip() if r.returncode == 0 else None
+
+    with session_scope() as s:
+        rows = s.execute(select(StoredFile.id, StoredFile.key)
+                         .where(StoredFile.kind == "wav")
+                         .order_by(StoredFile.id)).all()
+    if limit:
+        rows = rows[:limit]
+
+    out = {"checked": 0, "stripped": 0, "already_clean": 0,
+           "skipped": [], "dry_run": dry_run}
+
+    for row_id, key in rows:
+        out["checked"] += 1
+        with session_scope() as s:
+            blob = s.execute(select(StoredFile.data)
+                             .where(StoredFile.id == row_id)).scalar_one_or_none()
+        if not blob:
+            out["skipped"].append({"key": key, "why": "no bytes"})
+            continue
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "in.wav"
+            dst = Path(tmp) / "out.wav"
+            src.write_bytes(blob)
+
+            probe = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format_tags",
+                 "-of", "default=nw=1", str(src)], capture_output=True, text=True)
+            if not probe.stdout.strip():
+                out["already_clean"] += 1
+                continue
+
+            before = audio_hash(src)
+            # -c copy: the samples are not re-encoded, only the container is
+            # rewritten without its INFO chunk.
+            enc = subprocess.run(
+                ["ffmpeg", "-v", "error", "-y", "-i", str(src), "-c", "copy",
+                 "-map_metadata", "-1", "-bitexact", str(dst)],
+                capture_output=True, text=True)
+            if enc.returncode != 0 or not dst.is_file():
+                out["skipped"].append({"key": key, "why": f"ffmpeg: {enc.stderr[:120]}"})
+                continue
+
+            after = audio_hash(dst)
+            if not before or before != after:
+                out["skipped"].append({"key": key, "why": "audio hash changed — not stored"})
+                continue
+
+            cleaned = dst.read_bytes()
+            if not dry_run:
+                with session_scope() as s:
+                    s.execute(update(StoredFile).where(StoredFile.id == row_id).values(
+                        data=cleaned, size_bytes=len(cleaned),
+                        sha256=hashlib.sha256(cleaned).hexdigest()))
+            out["stripped"] += 1
+
+    return out

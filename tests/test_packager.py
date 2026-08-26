@@ -1,3 +1,6 @@
+import shutil
+import subprocess
+import pytest
 from datetime import date
 
 from dailyfive.packager import (DISTRIBUTION_TEMPLATE, build_meta, slugify,
@@ -137,3 +140,39 @@ def test_meta_does_not_claim_a_cover_that_was_never_made(tmp_path):
     meta = build_meta({"title": "T", "slot_type": "full"}, {"title": "T"},
                       date(2026, 8, 27), 1, {}, cover=made)
     assert meta["files"]["cover"] == "cover.jpg"
+
+
+# ── the delivery master carries nothing ──────────────────────────────────────
+
+def _tags(path):
+    import subprocess
+    return subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format_tags",
+         "-of", "default=nw=1", str(path)],
+        capture_output=True, text=True).stdout.strip()
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_the_wav_master_carries_no_metadata(tmp_path):
+    """Suno stamps its own name, the render time and the clip id into every WAV
+    it returns, and ffmpeg copies that chunk forward unless told not to. A
+    delivery master that announces where it came from is the one thing this
+    file must not be."""
+    from dailyfive.packager import master_wav
+    from dailyfive.qc import measure
+
+    src = tmp_path / "src.wav"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+         "sine=frequency=440:duration=3", "-c:a", "pcm_s16le", "-ar", "44100",
+         "-metadata", "comment=made with suno; created=2026-01-01T00:00:00Z; id=abc",
+         str(src)], check=True)
+    assert "suno" in _tags(src)
+
+    out = master_wav(src, tmp_path / "master.wav", measure(src))
+    assert _tags(out) == ""
+    # The encoder tag is the half that looks like a failed strip: without
+    # -bitexact ffmpeg empties the INFO chunk and writes its own ISFT back.
+    body = out.read_bytes()
+    for marker in (b"LIST", b"INFO", b"ISFT", b"ICMT", b"suno", b"Lavf"):
+        assert marker not in body, marker
