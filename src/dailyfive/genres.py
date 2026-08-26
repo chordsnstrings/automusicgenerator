@@ -191,6 +191,17 @@ ALIASES: dict[str, str] = {
     "electro": "electronic",
     "singer-songwriter": "singer-songwriter",
     "americana": "americana",
+    # The display names the two charts actually print. A model told to use our
+    # vocabulary is reading rows labelled "R&B/Soul" and "Rap/Hip Hop" as it
+    # answers, and it will occasionally echo the row instead of the term. These
+    # are not a licence to guess — every one is a name a live feed uses for a
+    # family we already carry, verified against the feed and not invented.
+    "r-b-soul": "r-and-b",
+    "soul": "r-and-b",
+    "soul-funk": "r-and-b",
+    "rap-hip-hop": "hip-hop",
+    "techno-house": "electronic",
+    "latin-music": "latin",
 }
 
 
