@@ -121,3 +121,34 @@ def test_a_genre_cannot_crowd_out_the_tempo_and_the_form(spec_capture, codex):
                                    style_string="warm room mic, brushed drums")]
     out = director.run([{"theme": "t"}], codex, full_n=1, short_n=0, slate=SLATE)
     assert out[0]["genre_label_only"] is True
+
+
+def test_the_word_the_director_chose_survives_into_the_ledger(spec_capture, codex):
+    """The count of off-vocabulary answers is the evidence a term is missing;
+    the WORD is the evidence of which term. run() normalises in its own
+    cleaning loop and writes the null before genres.enforce() ever sees the
+    spec, so enforce() reading the two live fields recorded an empty string
+    every time and "afrobeats" never reached the ledger or the console."""
+    from dailyfive import genres
+
+    spec_capture["specs"] = [_spec(genre_family="afrobeats", genre="amapiano")]
+    out = director.run([{"theme": "t"}], codex, full_n=1, short_n=0, slate=SLATE)
+    assert out[0]["genre_family"] is None
+    assert out[0]["genre_off_vocabulary"] == "afrobeats"
+
+    ledger = genres.enforce(out, SLATE)
+    assert ledger["unlabelled"] == 1
+    assert ledger["off_vocabulary"] == ["afrobeats"]
+
+
+def test_a_spec_that_named_no_genre_is_counted_but_contributes_no_word(spec_capture, codex):
+    """Not the same evidence. One says the vocabulary is missing a term; the
+    other says the Director skipped the field, and a blank string in the list
+    the console reads out as words would read as the first."""
+    from dailyfive import genres
+
+    spec_capture["specs"] = [_spec()]
+    out = director.run([{"theme": "t"}], codex, full_n=1, short_n=0, slate=SLATE)
+    ledger = genres.enforce(out, SLATE)
+    assert ledger["unlabelled"] == 1
+    assert ledger["off_vocabulary"] == []

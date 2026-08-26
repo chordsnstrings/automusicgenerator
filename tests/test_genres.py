@@ -747,3 +747,41 @@ def test_the_window_never_reaches_the_allocator():
 
     source = inspect.getsource(genres.slate) + inspect.getsource(genres.scores)
     assert "trend(" not in source
+
+
+def test_the_thin_regime_reason_counts_the_ranked_families_it_beat():
+    """The thin regime holds while EITHER fewer than GENRE_WARM_FAMILIES are
+    ranked OR fewer than GENRE_WARM_TOTAL briefs are rated, so three ranked
+    families and 24 ratings is thin. The sentence claiming a unique leader is
+    printed verbatim in the console's Why picked column, beside a table showing
+    all three ranked."""
+    _stock("country", n=GENRE_MIN_RATED, rating=9, start=900)
+    _stock("pop", n=GENRE_MIN_RATED, rating=6, start=940)
+    _stock("rock", n=GENRE_MIN_RATED, rating=4, start=980)
+    data = genres.scores()
+    assert len(data["ranked"]) == 3
+    assert genres.status(data=data)["regime"] == "thin"
+
+    lead = next(r for r in genres.slate(7) if r["genre_family"] == "country")
+    assert "the only ranked leader" not in lead["why"]
+    assert "highest-scoring of the 3 ranked families" in lead["why"]
+    assert "9.0 over 8 rated briefs" in lead["why"]
+
+
+def test_a_single_ranked_family_still_reads_as_one():
+    _stock("country", n=GENRE_MIN_RATED, rating=9)
+    lead = next(r for r in genres.slate(7) if r["genre_family"] == "country")
+    assert "highest-scoring of the 1 ranked family," in lead["why"]
+
+
+def test_the_producer_mean_carries_the_clips_it_was_taken_over():
+    """It counts CLIPS where every other count on the row counts briefs, and
+    two clips of a pair are one decision. A cell that printed the number
+    without it would be the bare average this module exists to stop printing."""
+    rid = _run(date(2026, 6, 1))
+    bid = _brief(rid, 0, "country", "country-soul")
+    _clips(rid, bid, n=2, score=9.4)
+    row = genres.scores()["families"]["country"]
+    assert row["producer"] == 9.4
+    assert row["producer_n"] == 2
+    assert row["briefed"] == 1, "the two counts are not the same count"

@@ -217,6 +217,12 @@ Two things bite on a fresh cluster, and both are invisible from the error:
 The worker keeps its own clock (`dailyfive scheduler`): purge 03:00, backup
 04:30, run 05:10, all UTC.
 
+The 04:30 backup goes to Spaces or nowhere. It will not write the dump into the
+database it is a dump of, which is what reusing `AUDIO_STORE=database` for it
+did — no off-site copy, and each night's dump containing every retained night
+before it. With `SPACES_*` unset you get a local copy on a container that is
+replaced on the next deploy, and a log line saying exactly that.
+
 ### A droplet — when you want the box
 
 ```bash

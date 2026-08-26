@@ -23,7 +23,11 @@ bad()  { say "$1" "FAIL — $2"; FAILED=$((FAILED + 1)); }
 code() { curl -sS -o /dev/null -w '%{http_code}' --max-time "${3:-45}" ${2:+-H "$2"} "$BASE$1"; }
 
 # ── the pages ────────────────────────────────────────────────────────────────
-for p in / /runs /agents /codex /files /storage /health /healthz; do
+# /genres is the heaviest page here — it calls scores(), status(), trend() and
+# slate(), and indexes into Run.notes JSON written by sixty runs of possibly
+# different shapes. A 500 on it is exactly the kind of failure a green test
+# suite cannot see, which is what this script is for.
+for p in / /runs /agents /codex /genres /files /storage /health /healthz; do
   c=$(code "$p")
   [ "$c" = "200" ] && ok "GET $p" "200" || bad "GET $p" "$c"
 done
@@ -86,11 +90,28 @@ print("%-46s %s — db=%s, latest=%s, phase=%s"
       % (label, state, db, h.get("latest_run"), h.get("phase")))
 sys.exit(0 if h.get("ok") else 1)' || FAILED=$((FAILED + 1))
 
+# Storage is the one figure here that can end the studio rather than interrupt
+# it: a managed Postgres that fills its disk goes read-only, and with
+# AUDIO_STORE=database the only copy of the delivered audio is inside it. So
+# this asserts rather than prints — but only where the disk has been declared,
+# because guessing a cluster's capacity would be a worse failure than not
+# knowing it.
 curl -sS --max-time 45 "$BASE/storage" | python3 -c '
 import json, sys
 s = json.load(sys.stdin)
-print("%-46s ok — %s files, %s GB, %sd retention, %s due"
-      % ("storage", s["files"], s["total_gb"], s["retention_days"], s["due_now"]))'
+print("%-46s ok — %s files, %s GB, %sd retention, %s due, settles at %s GB"
+      % ("storage", s["files"], s["total_gb"], s["retention_days"],
+         s["due_now"], s.get("projected_steady_gb")))
+head = s.get("headroom_gb")
+if s.get("disk_gb") is None:
+    print("%-46s ok — DB_DISK_GB is not set, so headroom is unknown"
+          % "storage headroom")
+elif head is None or head > 0:
+    print("%-46s ok — %s GB spare on a %s GB disk" % ("storage headroom", head, s["disk_gb"]))
+else:
+    print("%-46s FAIL — settles at %s GB on a %s GB disk"
+          % ("storage headroom", s.get("projected_steady_gb"), s["disk_gb"]))
+    sys.exit(1)' || FAILED=$((FAILED + 1))
 
 # ── things that must NOT work ────────────────────────────────────────────────
 c=$(code "/files/../../etc/passwd"); [ "$c" = "404" ] && ok "path traversal" "404" || bad "path traversal" "$c"

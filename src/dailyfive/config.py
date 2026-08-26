@@ -32,6 +32,16 @@ def _i(name: str, default: int) -> int:
         raise ConfigError(f"{name} must be an integer, got {raw!r}") from exc
 
 
+def _f(name: str, default: float) -> float:
+    raw = _s(name)
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be a number, got {raw!r}") from exc
+
+
 def _b(name: str, default: bool = False) -> bool:
     raw = _s(name).lower()
     if not raw:
@@ -104,6 +114,18 @@ class Settings:
     # The retention window applies whichever is chosen.
     audio_store: str = field(default_factory=lambda: _s("AUDIO_STORE", "database").lower())
     retention_days: int = field(default_factory=lambda: _i("RETENTION_DAYS", 30))
+    # What the cluster's disk actually is, in GB. Zero means undeclared, and
+    # undeclared is reported as unknown rather than assumed to be enough.
+    #
+    # This exists because RETENTION_DAYS decides where the store settles and
+    # nothing anywhere compared that number to a capacity. With
+    # AUDIO_STORE=database the audio is inside the managed Postgres, thirty
+    # days of it projects to 8.2 GB of table data before WAL, indexes, TOAST
+    # and the autovacuum headroom a table churning five multi-megabyte blobs a
+    # day needs — and a managed Postgres that fills its disk goes read-only,
+    # with the only copy of the delivered audio in it and no undo short of a
+    # resize. Read the figure off the cluster; do not guess it.
+    db_disk_gb: float = field(default_factory=lambda: _f("DB_DISK_GB", 0.0))
 
     # Signals
     youtube_api_key: str = field(default_factory=lambda: _s("YOUTUBE_API_KEY"))

@@ -12,6 +12,7 @@ from .. import genres, ledger, llm
 from ..archivist import aggregate, learning_status
 from ..codex import current as current_codex
 from ..codex import is_negation
+from ..codex import scored as codex_scored
 from ..config import settings
 from ..db import session_scope
 from ..models import (AgentCall, Brief, Clip, CodexVersion, Decision, Job,
@@ -28,7 +29,9 @@ PHASE_LABEL = {RunPhase.SENSED: "sense", RunPhase.BRIEFED: "brief",
                RunPhase.RENDERED: "render", RunPhase.JUDGED: "judge",
                RunPhase.SHIPPED: "ship"}
 
-# The full roster, including the four that deliberately have no brain.
+# The full roster, including the entries that deliberately have no brain. How
+# many that is is computed where it is printed, not written here: the last time
+# it was a literal it said four while the list held five.
 ROSTER = [
     ("Scout", "scout", "trend + sentiment signals from seven free feeds",
      "making music for a mood that peaked three weeks ago"),
@@ -330,6 +333,31 @@ def overview() -> str:
     return page("Overview", "".join(body), "/", script=RATE_JS)
 
 
+def _and(names: list[str]) -> str:
+    """`a`, `a and b`, `a, b and c`. Used wherever a tie has to be spelled out."""
+    if len(names) < 2:
+        return names[0] if names else ""
+    return ", ".join(names[:-1]) + f" and {names[-1]}"
+
+
+def _genre_leaders(data: dict) -> tuple[list[str], float | None]:
+    """The ranked families at the top, as a set, because a tie is an answer.
+
+    Both the overview line and the /genres headline phrase from this and
+    nothing else. They used to sort independently — one on ``(taste, f)`` and
+    one on ``(-taste, f)`` — so two families on identical numbers made the two
+    pages name opposite winners, and the overview links straight through to the
+    page that reverses it. It is the same rule the chart split already follows:
+    a tie broken silently hides the finding behind a sort order.
+    """
+    fams = data["families"]
+    ranked = sorted(data["ranked"], key=lambda f: (-fams[f]["taste"], f))
+    if not ranked:
+        return [], None
+    top = fams[ranked[0]]["taste"]
+    return [f for f in ranked if fams[f]["taste"] == top], top
+
+
 def _genre_line() -> str:
     """One computed sentence, because the daily habit lives on this page.
 
@@ -339,17 +367,31 @@ def _genre_line() -> str:
     """
     data = genres.scores()
     fams, ranked = data["families"], data["ranked"]
-    if ranked:
-        lead = max(ranked, key=lambda f: (fams[f]["taste"], f))
-        return (f"{lead} leads at {fams[lead]['taste']:.1f} over "
-                f"{fams[lead]['rated_n']} rated briefs, of {len(ranked)} ranked "
+    lead, top = _genre_leaders(data)
+    if lead:
+        if len(lead) == 1:
+            return (f"{lead[0]} leads at {top:.1f} over "
+                    f"{fams[lead[0]]['rated_n']} rated briefs, of {len(ranked)} "
+                    f"ranked families.")
+        return (f"{_and(lead)} are level at {top:.1f}, of {len(ranked)} ranked "
                 f"families.")
     if data["rated_briefs"]:
         return (f"{data['rated_briefs']} rated briefs and no family has reached "
                 f"{genres.GENRE_MIN_RATED}, so nothing is ranked yet.")
     if data["briefed_families"]:
-        return (f"{len(data['briefed_families'])} families briefed and none "
-                f"rated — your rating is the only thing that ranks them.")
+        n = len(data["briefed_families"])
+        return (f"{n} famil{'y' if n == 1 else 'ies'} briefed and none rated — "
+                f"your rating is the only thing that ranks them.")
+    # Not the same state as an empty studio, and saying so here is the whole
+    # point: on the day this shipped the database held six briefs and twelve
+    # clips, all from before genre was recorded. "Nothing briefed yet" would be
+    # the one line on the console claiming the studio has made nothing.
+    unlabelled = data["unlabelled_briefs"]
+    if unlabelled:
+        return (f"{unlabelled} brief{'' if unlabelled == 1 else 's'} carry no "
+                f"genre — written before the studio recorded one, and keeping a "
+                f"null rather than a guess. Nothing is ranked and nothing can "
+                f"be until a run briefs a genre.")
     return (f"Nothing briefed yet. The vocabulary holds "
             f"{len(genres.FAMILIES)} families and {len(genres.SPECIFICS)} "
             f"specific genres.")
@@ -817,15 +859,32 @@ def codex_page() -> str:
     learn_rows = [[esc(k), f'<span class="num">{v:.2f}</span>', bar(v, 10)]
                   for k, v in top]
 
-    genre_scored = learned.get("genre_scores") or {}
+    # Two different reasons for an empty table, and they are not interchangeable.
+    # The live codex is the second one: v3 holds "no synths" and "no pads" and
+    # nothing else, both well over the observation floor. Saying nothing had
+    # enough observations there would be false about the only two rows there are.
+    if styles and not scoreable:
+        styles_empty = (f"every one of the {dropped} stored descriptor"
+                        f"{'' if dropped == 1 else 's'} is a negation, so none of "
+                        f"them can be scored — see the note below")
+    else:
+        styles_empty = "no descriptor has enough observations behind it yet"
+
+    # Read through codex.scored, which is what brief_context() reads, and
+    # parsed before it is sorted. Sorting first meant indexing every stored
+    # value as a dict, so a body holding a bare number — a shape scored() is
+    # written to keep readable forever — took this page down while the prompt
+    # path rendered it happily. The page must not be stricter than the prompt.
+    genre_scored = [(label, pair) for label, pair
+                    in ((k, codex_scored(v))
+                        for k, v in (learned.get("genre_scores") or {}).items())
+                    if pair is not None]
     genre_rows = [[
         f"<b>{esc(label)}</b>",
-        f'<span class="num">{float(entry.get("mean", 0)):.2f}</span>',
-        f'<span class="mini">over {int(entry.get("n", 0))} rated briefs</span>',
-        bar(float(entry.get("mean", 0)), 10),
-    ] for label, entry in sorted(genre_scored.items(),
-                                 key=lambda kv: -float(kv[1].get("mean", 0)))
-        if isinstance(entry, dict)]
+        f'<span class="num">{mean:.2f}</span>',
+        f'<span class="mini">over {n} rated brief{"" if n == 1 else "s"}</span>',
+        bar(mean, 10),
+    ] for label, (mean, n) in sorted(genre_scored, key=lambda kv: (-kv[1][0], kv[0]))]
 
     stats_now = aggregate(60)
     return page("Codex", "".join([
@@ -842,15 +901,14 @@ def codex_page() -> str:
         table(["Name", "Voice", "State", "Persona ID", "Territory"], persona_rows,
               empty="no personas defined"),
         "<h2>What it has learned</h2>",
-        (f'<p class="sub">Nothing yet — {stats_now["observations"]} observations '
-         f'recorded, and an average needs at least four behind it before it is '
-         f'reported as a trend.</p>' if not top else
+        (f'<p class="sub">Nothing scoreable yet — {stats_now["observations"]} '
+         f'observations recorded, and an average needs at least four behind it '
+         f'before it is reported as a trend.</p>' if not top else
          '<p class="sub">Style descriptors scored by outcome. Your ratings win '
          'outright where they exist; the Producer\'s score stands in, damped, where '
          'they do not.</p>'),
         table(["Style descriptor", "Score", ""], learn_rows,
-              empty="no descriptor has enough observations behind it yet",
-              num_cols={1}),
+              empty=styles_empty, num_cols={1}),
         (f'<p class="sub">{dropped} stored descriptor'
          f'{"" if dropped == 1 else "s"} not shown: they state what a record '
          f'does not have, and an absence cannot be credited with an outcome in '
@@ -915,6 +973,23 @@ def _genre_mean_cell(row: dict) -> str:
             f'rated briefs</span>')
 
 
+def _genre_producer_cell(row: dict) -> str:
+    """The Producer's own mean, with the clips it was taken over.
+
+    Same treatment as the rating mean beside it, and it needs it more, not
+    less. This one is available from day one, so the first number a reader ever
+    sees on this page is here — and it is an average over CLIPS, so one brief
+    fills it with two scores that are not two decisions. A bare "9.4" in the
+    row that sorts to the top of an otherwise empty table is exactly how a
+    two-clip average comes to look like a finding.
+    """
+    if row["producer"] is None:
+        return '<span class="mini">—</span>'
+    n = row.get("producer_n") or 0
+    return (f'<span class="num">{row["producer"]:.1f}</span><br>'
+            f'<span class="mini">over {n} scored clip{"" if n == 1 else "s"}</span>')
+
+
 def _genre_delta_cell(row: dict) -> str:
     if row.get("delta") is None:
         return '<span class="mini">not enough history</span>'
@@ -929,8 +1004,7 @@ def _genre_row(label: str, row: dict, trend_row: dict) -> list[str]:
         f'<span class="num">{row["shipped"]}</span>',
         f'<span class="num">{row["rated_n"]}</span>',
         _genre_mean_cell(row),
-        (f'<span class="num">{row["producer"]:.1f}</span>' if row["producer"] is not None
-         else '<span class="mini">—</span>'),
+        _genre_producer_cell(row),
         (f'<span class="num">{rel:.0%}</span><br>'
          f'<span class="mini">of {row["qc_measured"]} clips</span>'
          if rel is not None else '<span class="mini">—</span>'),
@@ -951,26 +1025,41 @@ def _genre_headline(data: dict, learn: dict) -> str:
                 f"families and {n_spec} specific genres and has recorded none of "
                 f"them. The first run fills this page.")
     if not ranked:
-        return (f"{tried} of {n_fam} families briefed across {labelled} briefs, "
-                f"and nothing here is ranked: {learn['rated']} of "
-                f"{learn['shipped']} shipped songs carry your rating, so the "
-                f"only column with numbers in it is the Producer's own score. "
-                f"{learn['signal']}.")
+        return (f"{tried} of {n_fam} families briefed across {labelled} "
+                f"brief{'' if labelled == 1 else 's'}, and nothing here is "
+                f"ranked: {learn['rated']} of {learn['shipped']} shipped "
+                f"song{'' if learn['shipped'] == 1 else 's'} carry your rating, "
+                f"so the only column with numbers in it is the Producer's own "
+                f"score. {learn['signal']}.")
 
     order = sorted(ranked, key=lambda f: (-fams[f]["taste"], f))
-    lead = order[0]
+    lead, top = _genre_leaders(data)
     if len(order) == 1:
-        head = (f"{lead} is the only ranked family: {fams[lead]['taste']:.1f} "
-                f"across {fams[lead]['rated_n']} rated briefs, with nothing yet "
+        head = (f"{order[0]} is the only ranked family: {top:.1f} across "
+                f"{fams[order[0]]['rated_n']} rated briefs, with nothing yet "
                 f"to compare it against. ")
+    elif len(lead) == len(order):
+        # Every ranked family on the same number. "X is ahead, Y trails" beside
+        # two identical figures was the version of this sentence a reader could
+        # check against the table and find false.
+        head = (f"{_and(lead)} are level at {top:.1f}, across "
+                f"{_and([str(fams[f]['rated_n']) for f in lead])} rated briefs "
+                f"respectively — nothing separates them. ")
     else:
         lag = order[-1]
-        head = (f"{lead} is ahead: {fams[lead]['taste']:.1f} across "
-                f"{fams[lead]['rated_n']} rated briefs. {lag} trails at "
-                f"{fams[lag]['taste']:.1f} across {fams[lag]['rated_n']}. ")
-    return head + (f"{tried - len(ranked)} of {tried} briefed families are not "
-                   f"ranked — a family needs {genres.GENRE_MIN_RATED} rated "
-                   f"briefs behind it before an average means anything.")
+        ahead = (f"{lead[0]} is ahead: {top:.1f} across "
+                 f"{fams[lead[0]]['rated_n']} rated briefs. " if len(lead) == 1
+                 else f"{_and(lead)} are level at the top: {top:.1f}. ")
+        head = (ahead + f"{lag} trails at {fams[lag]['taste']:.1f} across "
+                        f"{fams[lag]['rated_n']}. ")
+    unranked = tried - len(ranked)
+    if not unranked:
+        return head + (f"Every briefed family is ranked, which takes "
+                       f"{genres.GENRE_MIN_RATED} rated briefs each — the "
+                       f"numbers move from here, not the count.")
+    return head + (f"{unranked} of {tried} briefed families are not ranked — a "
+                   f"family needs {genres.GENRE_MIN_RATED} rated briefs behind "
+                   f"it before an average means anything.")
 
 
 def _genre_waiting(data: dict, cfg) -> str:
@@ -981,30 +1070,64 @@ def _genre_waiting(data: dict, cfg) -> str:
     """
     fams = data["families"]
     bar_n = genres.GENRE_MIN_RATED
+    rule = f"A family is ranked once {bar_n} rated briefs sit behind it. "
     close = [f for f in fams if fams[f]["taste"] is None and fams[f]["rated_n"]]
     if close:
         best = max(close, key=lambda f: (fams[f]["rated_n"], f))
-        return (f"A family is ranked once {bar_n} rated briefs sit behind it. "
-                f"The closest is {best} with {fams[best]['rated_n']}.")
+        return rule + f"The closest is {best} with {fams[best]['rated_n']}."
+
+    # No family is part-way to the bar, and that has two opposite causes. This
+    # is the one where every family carrying a rating has already cleared it —
+    # the design's intended end state — and it used to fall through to the
+    # branch below and tell the user nothing had been rated, directly under a
+    # headline naming a leader. Checked first for that reason.
+    ranked = data["ranked"]
+    if ranked:
+        unrated = [f for f in fams if not fams[f]["rated_n"]]
+        head = (rule + f"Every family carrying a rating has cleared it: "
+                       f"{len(ranked)} of {len(fams)} ranked, and nothing is "
+                       f"part-way. ")
+        if not unrated:
+            return head + ("There is no family left to promote — the numbers "
+                           "move from here, not the count.")
+        briefed = [f for f in unrated if fams[f]["briefed"]]
+        # Only the clauses that are not zero. "0 briefed and waiting on you"
+        # reads as a finding about nothing.
+        parts = [f"{n} {what}" for n, what in
+                 ((len(briefed), "briefed and waiting on you"),
+                  (len(unrated) - len(briefed), "waiting on a slate")) if n]
+        return head + (f"The other {len(unrated)} have no rating behind them at "
+                       f"all: {_and(parts)}.")
+
     labelled = sum(r["briefed"] for r in fams.values())
     if labelled:
-        return (f"A family is ranked once {bar_n} rated briefs sit behind it. "
-                f"{labelled} briefs carry a genre and none of them has been "
-                f"rated, so nothing is close. Rating the songs on the overview "
-                f"is the only thing that moves this page.")
-    return (f"A family is ranked once {bar_n} rated briefs sit behind it. "
-            f"Nothing has been briefed, so nothing is close. The next run "
-            f"allocates {cfg.total_briefs} briefs across the least-sampled "
-            f"families, which today is all {len(genres.FAMILIES)} of them.")
+        return rule + (f"{labelled} brief{'' if labelled == 1 else 's'} carry a "
+                       f"genre and none of them has been rated, so nothing is "
+                       f"close. Rating the songs on the overview is the only "
+                       f"thing that moves this page.")
+    return rule + (f"Nothing has been briefed, so nothing is close. The next "
+                   f"run allocates {cfg.total_briefs} briefs across the "
+                   f"least-sampled families, which today is all "
+                   f"{len(genres.FAMILIES)} of them.")
 
 
-def _genre_slate_block(latest: tuple[date, dict] | None, cfg) -> tuple[str, str]:
+def _genre_slate_block(latest: tuple[date, dict] | None, cfg,
+                       sense: tuple[date, dict] | None = None) -> tuple[str, str]:
     """Today's slate if a run recorded one, otherwise the one the next run gets.
 
     Computing it rather than showing an empty box is what makes the page real
-    on day one: the allocator is deterministic, so the slate shown is the slate
-    that would be handed over, and an all-explore slate is an honest thing to
-    look at. It is labelled as unrun, because a plan is not a record.
+    on day one: the allocator is deterministic, so an all-explore slate is an
+    honest thing to look at. It is labelled as unrun, because a plan is not a
+    record.
+
+    Given the same two arguments the pipeline gives it, and this is not
+    optional. ``_coverage_pick`` sorts a family the charts named ahead of one
+    they did not, among families sampled equally — which on an empty database
+    is the entire ordering. Calling it bare here showed a preview with folk in
+    it and r-and-b out where the run would have done the reverse, under a
+    caption promising it was the same slate. The caption below now says what it
+    actually rests on as well, because the next run senses the feeds again
+    before it allocates and the charts move.
     """
     if latest is not None:
         run_date, ledger_notes = latest
@@ -1015,11 +1138,18 @@ def _genre_slate_block(latest: tuple[date, dict] | None, cfg) -> tuple[str, str]
                    f"the briefs it allocated — a slate persisted without them "
                    f"would be a plan nothing carried out.")
     else:
-        rows = genres.slate(cfg.total_briefs)
+        sense_date, sheet = sense if sense else (None, {})
+        rows = genres.slate(cfg.total_briefs,
+                            calibration=sheet.get("calibration"),
+                            external=sheet.get("external_genres"))
         heading = "The next slate"
-        caption = ("No run has recorded a slate yet. This is the slate the next "
-                   "run would be given — the allocator is deterministic, so it "
-                   "is the same one it will get if nothing is rated first.")
+        caption = ("No run has recorded a slate yet. This is what the allocator "
+                   "returns for " + (
+                       f"the chart evidence of {sense_date.isoformat()}"
+                       if sense_date else "no chart evidence at all")
+                   + " — it is deterministic, so the next run gets this slate "
+                     "unless something is rated first or the charts move under "
+                     "it, and the next run senses the charts before it allocates.")
 
     body = [[
         f"<b>{esc(r.get('genre_family'))}</b>",
@@ -1172,8 +1302,13 @@ def genres_page() -> str:
         history = _genre_history(s)
     latest_slate = next(((d, (n or {})["genre"]) for d, n in recent
                          if (n or {}).get("genre", {}).get("slate")), None)
-    latest_scout = next(((d, (n or {})["scout"]["external_genres"]) for d, n in recent
+    # The whole scout block, not just its chart counts: the preview slate needs
+    # the same calibration and external pair the pipeline hands the allocator,
+    # and they were written by one run together.
+    latest_sense = next(((d, (n or {})["scout"]) for d, n in recent
                          if (n or {}).get("scout", {}).get("external_genres")), None)
+    latest_scout = ((latest_sense[0], latest_sense[1]["external_genres"])
+                    if latest_sense else None)
 
     # Ranked families first and in score order, then the rest by how much has
     # been tried. The producer's own score is reported and never orders
@@ -1200,7 +1335,8 @@ def genres_page() -> str:
         f'<span class="mini">{esc(", ".join(genres.VOCABULARY[family]))}</span>',
     ] for family in genres.FAMILIES]
 
-    slate_heading, slate_body = _genre_slate_block(latest_slate, cfg)
+    slate_heading, slate_body = _genre_slate_block(latest_slate, cfg,
+                                                   sense=latest_sense)
 
     unlabelled = data["unlabelled_briefs"]
     predate = ("" if not unlabelled else
@@ -1214,14 +1350,25 @@ def genres_page() -> str:
 
     ledger_notes = latest_slate[1] if latest_slate else {}
     off_vocab = int(ledger_notes.get("unlabelled") or 0)
+    # Dated, like the slate heading below it. This is the most recent run that
+    # recorded a slate, which is not necessarily the most recent run: a run that
+    # fails in sense or brief never writes this key, so "on the last run" could
+    # silently mean three days ago on exactly the days an operator is reading
+    # the page to find out what went wrong.
+    off_when = (f"on the run of {latest_slate[0].isoformat()}" if latest_slate
+                else "on the last recorded run")
+    words = [w for w in (ledger_notes.get("off_vocabulary") or []) if w]
+    off_words = ("" if not words else
+                 " The words it chose were " + esc(_and(sorted(set(words)))) +
+                 " — that is the term to argue about, not the count.")
     off_note = ("" if not off_vocab else
                 f'<div class="note"><span>Vocabulary pressure</span>The Director '
                 f'returned a genre outside the vocabulary {off_vocab} time'
-                f'{"" if off_vocab == 1 else "s"} on the last run. Those specs '
-                f'were briefed and written with a null genre rather than dropped '
-                f'— a discarded spec costs a whole generation over a label. A '
-                f'count that keeps climbing is the evidence that a term is '
-                f'missing, and adding one is a change to genres.py.</div>')
+                f'{"" if off_vocab == 1 else "s"} {off_when}.{off_words} Those '
+                f'specs were briefed and written with a null genre rather than '
+                f'dropped — a discarded spec costs a whole generation over a '
+                f'label. A count that keeps climbing is the evidence that a term '
+                f'is missing, and adding one is a change to genres.py.</div>')
 
     proposal = (current_codex().body.get("learned", {})
                 .get("genre_vocabulary_note") or "").strip()
@@ -1276,10 +1423,15 @@ def genres_page() -> str:
               spec_rows, num_cols={1, 2, 3, 5, 6, 7},
               empty=f"no specific genre has been briefed yet — all "
                     f"{len(genres.SPECIFICS)} of them are listed below"),
-        '<p class="sub">Almost all dashes for the first quarter, and that is the '
-        'design working rather than failing. Families answer "is country '
-        'working" in about a fortnight; a specific needs the same eight rated '
-        'briefs from a ninth of the supply.</p>',
+        f'<p class="sub">Mostly dashes, and that is the design working rather '
+        f'than failing: a specific needs the same {genres.GENRE_MIN_RATED} '
+        f'rated briefs a family does, drawn from one of '
+        f'{len(genres.SPECIFICS)} labels rather than one of '
+        f'{len(genres.FAMILIES)}. So the family table answers "is country '
+        f'working" first and this one answers "is it country-soul or '
+        f'country-trap" a long way behind it. How long is not stated here on '
+        f'purpose — it depends entirely on how many of the day\'s songs get '
+        f'rated, which today is {learn["rated"]} of {learn["shipped"]}.</p>',
         "<h2>The vocabulary</h2>",
         table(["Family", "ID3 tag", "Specific genres"], vocab_rows),
         '<p class="sub">Closed, and code rather than codex: the Director, the '

@@ -54,6 +54,11 @@
           "scope": "RUN_AND_BUILD_TIME"
         },
         {
+          "key": "DB_DISK_GB",
+          "value": "",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
           "key": "FULL_BRIEFS",
           "value": "7",
           "scope": "RUN_AND_BUILD_TIME"
@@ -176,6 +181,11 @@
         {
           "key": "RETENTION_DAYS",
           "value": "30",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "DB_DISK_GB",
+          "value": "",
           "scope": "RUN_AND_BUILD_TIME"
         },
         {

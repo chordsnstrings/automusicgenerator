@@ -212,6 +212,15 @@ def run(themes: list[dict], codex: Codex, *, full_n: int, short_n: int,
             "genre": label,
             "genre_off_slate_reason": str(spec.get("genre_off_slate_reason") or "")[:160] or None,
         }
+        if family is None:
+            # The word the model chose, kept beside the null that replaced it.
+            # Without this the count of off-vocabulary answers survives and the
+            # evidence does not: genres.enforce() runs after this loop, reads a
+            # field this loop has already nulled, and would log an empty string
+            # where "afrobeats" belongs — and the missing term is the entire
+            # thing the count is supposed to be pointing at.
+            cleaned["genre_off_vocabulary"] = str(
+                spec.get("genre_family") or spec.get("genre") or "")[:60] or None
         if family and _answered_with_the_label(cleaned):
             # The instruction not to lean on the label is a request; this is
             # what notices when it was not honoured. Recorded, never repaired:

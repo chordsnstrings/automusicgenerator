@@ -150,7 +150,7 @@ def is_negation(token: str) -> bool:
     return tok.startswith(NEGATION_PREFIXES) or tok.endswith(("-free", " free"))
 
 
-def _scored(entry: Any) -> tuple[float, int] | None:
+def scored(entry: Any) -> tuple[float, int] | None:
     """A genre score row as (mean, n), or None if it carries neither.
 
     Tolerant because the body is JSON read back out of the database and a codex
@@ -158,6 +158,12 @@ def _scored(entry: Any) -> tuple[float, int] | None:
     rewritten in place, so every shape this key has ever had stays readable
     forever. A bare number is one of those older shapes; it renders with n=0,
     which is exactly what a mean with no sample count behind it is worth.
+
+    Public, and the console reads the stored body through this and nothing
+    else. A page that parses the shape itself will one day be stricter than
+    the prompt path is, and then a body the Director briefs from fine is a
+    body the console 500s on — with no way to fix it, because a codex version
+    is never rewritten in place.
     """
     if isinstance(entry, dict):
         mean, n = entry.get("mean"), entry.get("n")
@@ -180,7 +186,7 @@ def _genre_line(scores: Any, label: str, limit: int = 8) -> str | None:
     """
     rows = []
     for key, entry in (scores or {}).items():
-        pair = _scored(entry)
+        pair = scored(entry)
         if pair:
             rows.append((key, *pair))
     if not rows:

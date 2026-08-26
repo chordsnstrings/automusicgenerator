@@ -103,7 +103,29 @@ def usage() -> dict:
         "oldest_file": oldest.isoformat() if oldest else None,
         "due_now": due(),
         "projected_steady_gb": _projected(cfg),
+        **_headroom(cfg),
     }
+
+
+def _headroom(cfg) -> dict:
+    """Where the store settles against what the disk actually holds.
+
+    The projection on its own is a number with nothing to fail against, which
+    is how RETENTION_DAYS came to be doubled without anything noticing: the
+    figure went from 4.1 GB to 8.2 and every endpoint reported it happily. The
+    window is the owner's call and thirty days is theirs; what was missing is
+    the capacity to weigh it against.
+
+    Undeclared reads as unknown, never as enough. Guessing a managed cluster's
+    disk from its plan name is the kind of plausible-looking assumption this
+    codebase refuses everywhere else, and the consequence of guessing high is a
+    read-only database with the only copy of the audio inside it.
+    """
+    disk = cfg.db_disk_gb or None
+    if not disk or cfg.audio_store != "database":
+        return {"disk_gb": disk, "headroom_gb": None}
+    return {"disk_gb": disk,
+            "headroom_gb": round(disk - _projected(cfg), 1)}
 
 
 def _projected(cfg) -> float:

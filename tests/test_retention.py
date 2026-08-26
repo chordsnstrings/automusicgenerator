@@ -91,3 +91,38 @@ def test_usage_projects_where_the_store_settles(store):
 
 def test_purge_on_an_empty_store_is_a_no_op(store):
     assert purge()["removed"] == 0
+
+
+def test_headroom_is_unknown_until_the_disk_is_declared(monkeypatch):
+    """Undeclared reads as unknown, never as enough. Guessing a managed
+    cluster's disk from its plan name is exactly the plausible-looking
+    assumption this codebase refuses everywhere else, and guessing high ends in
+    a read-only database with the only copy of the audio inside it."""
+    from dailyfive.config import reload_settings
+    from dailyfive.retention import usage
+
+    monkeypatch.setenv("AUDIO_STORE", "database")
+    monkeypatch.setenv("DB_DISK_GB", "")
+    reload_settings()
+    u = usage()
+    assert u["disk_gb"] is None
+    assert u["headroom_gb"] is None
+    assert u["projected_steady_gb"] > 0, "a projection with nothing to fail against"
+
+
+def test_the_retention_window_is_weighed_against_a_declared_disk(monkeypatch):
+    """RETENTION_DAYS decides where the store settles, and the figure was
+    doubled from 4.1 GB to 8.2 with no capacity anywhere to compare it to."""
+    from dailyfive.config import reload_settings
+    from dailyfive.retention import usage
+
+    monkeypatch.setenv("AUDIO_STORE", "database")
+    monkeypatch.setenv("DB_DISK_GB", "10")
+    cfg = reload_settings()
+    u = usage()
+    assert u["disk_gb"] == 10
+    assert u["headroom_gb"] == round(10 - u["projected_steady_gb"], 1)
+
+    monkeypatch.setenv("RETENTION_DAYS", str(cfg.retention_days * 4))
+    reload_settings()
+    assert usage()["headroom_gb"] < 0, "a window that does not fit reads as fitting"

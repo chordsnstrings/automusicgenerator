@@ -576,3 +576,181 @@ def test_the_codex_page_shows_a_genre_score_with_its_sample_count(client):
 
     page = client.get("/codex").text
     assert "7.40" in page and "over 12 rated briefs" in page
+
+
+def test_the_two_pages_never_name_different_leaders(client):
+    """Two families on identical numbers used to make the overview and /genres
+    disagree: one sorted on (taste, name) and the other on (-taste, name), so
+    the alphabetically last and first names won respectively. The overview
+    links straight through, so a reader followed a link that reversed the
+    answer — and neither page said the two were level."""
+    from dailyfive.genres import GENRE_MIN_RATED
+    _genre_days("country", "country-soul", [7] * GENRE_MIN_RATED, start=400)
+    _genre_days("pop", "alt-pop", [7] * GENRE_MIN_RATED, start=440)
+
+    overview, page = client.get("/").text, client.get("/genres").text
+    assert "country and pop are level at 7.0" in overview
+    assert "country and pop are level at 7.0" in page
+    for body in (overview, page):
+        assert "is ahead" not in body
+        assert "trails" not in body
+        assert "leads at" not in body
+
+
+def test_the_genre_page_does_not_deny_the_ratings_it_just_reported(client):
+    """The steady state this design is aiming at: every family carrying a
+    rating has cleared the bar, so nothing is part-way to it. That used to fall
+    through to the branch asserting nothing had been rated at all, printed
+    inches under a headline naming a leader."""
+    from dailyfive.genres import GENRE_MIN_RATED
+    _genre_days("country", "country-soul", [7] * GENRE_MIN_RATED, start=400)
+    _genre_days("pop", "alt-pop", [7] * GENRE_MIN_RATED, start=440)
+
+    body = client.get("/genres").text
+    assert "none of them has been rated" not in body
+    assert "Every family carrying a rating has cleared it" in body
+    assert f"2 of 9 ranked" in body
+    assert "7 briefed and waiting on you" not in body   # none of the other 7 was briefed
+    assert "7 waiting on a slate" in body
+
+
+def test_the_producer_mean_is_never_a_bare_number(client):
+    """The one number available on day one, in the row the table floats to the
+    top, and an average over CLIPS where every other count on the row is
+    briefs. Two clips of one brief is one decision, which is the whole error
+    this page was built to stop repeating."""
+    _genre_days("country", "country-soul", [None])
+    with session_scope() as s:
+        for c in s.query(Clip).all():
+            c.score_total = 9.4
+
+    body = client.get("/genres").text
+    assert "9.4" in body
+    assert "over 2 scored clips" in body
+
+
+def test_the_overview_does_not_call_a_pre_genre_database_empty(client, run_id,
+                                                               brief_factory):
+    """Production's state the day this shipped: six briefs and twelve clips,
+    all predating the column. "Nothing briefed yet" would be the one line on
+    the console claiming the studio has made nothing."""
+    brief_factory(idx=0)
+    body = client.get("/").text
+    assert "Nothing briefed yet" not in body
+    assert "1 brief carry no genre" in body or "1 brief carries no genre" in body
+
+
+def test_the_next_slate_preview_is_the_slate_the_run_would_be_given(client, run_id):
+    """The preview called the allocator with no chart evidence while the
+    pipeline calls it with today's. _coverage_pick sorts a family the charts
+    named ahead of one they did not, among families sampled equally — which on
+    an empty database is the entire ordering, so the preview showed a slate the
+    run would not brief, under a caption saying it was the same one."""
+    from dailyfive import genres
+    from dailyfive.config import settings
+    sheet = {"external_genres": {
+        "current": {"country": 6, "pop": 6, "hip-hop": 4, "latin": 2,
+                    "r-and-b": 2, "alternative": 1, "electronic": 1},
+        "deezer": {"pop": 18, "country": 10},
+        "entries": {"apple_current": 19, "apple_catalogue": 31, "deezer": 25},
+        "sources": ["apple", "deezer"]}}
+    with session_scope() as s:
+        s.get(Run, run_id).notes = {"scout": sheet}
+
+    expected = genres.slate(settings().total_briefs,
+                            calibration=None,
+                            external=sheet["external_genres"])
+    body = client.get("/genres").text
+    assert "The next slate" in body
+    for row in expected:
+        assert f"<b>{row['genre_family']}</b>" in body, row["genre_family"]
+    # And the families the allocator did NOT pick are absent from the slate
+    # table, which is the half that used to be wrong.
+    picked = {r["genre_family"] for r in expected}
+    slate_html = body[body.index("The next slate"):body.index("The last 30 days")]
+    for family in genres.FAMILIES:
+        if family not in picked:
+            assert f"<b>{family}</b>" not in slate_html, family
+
+
+def test_the_day_one_page_counts_one_brief_as_one_brief(client, run_id,
+                                                        brief_factory):
+    """Singular counts with plural nouns, on the first page a new operator
+    opens. The same module already gets this right three hundred lines away."""
+    _genre_days("country", "country-soul", [None])
+    body = client.get("/genres").text
+    assert "1 briefs" not in body
+    assert "across 1 brief," in body
+
+
+def test_the_vocabulary_pressure_note_names_the_run_and_the_word(client, run_id):
+    """A count that climbs is the evidence a term is missing — but only the
+    word says WHICH term, and only the date says whether "the last run" means
+    today or three days ago, which it does whenever a run fails before it
+    writes a slate."""
+    with session_scope() as s:
+        s.get(Run, run_id).notes = {"genre": {
+            "slate": [{"genre_family": "pop", "specs": 7, "stance": "explore",
+                       "mean": None, "n": 0, "why": "coverage: never briefed"}],
+            "off_vocabulary": ["afrobeats"], "unlabelled": 1}}
+        day = s.get(Run, run_id).run_date.isoformat()
+
+    body = client.get("/genres").text
+    assert f"outside the vocabulary 1 time on the run of {day}" in body
+    assert "afrobeats" in body
+    assert "on the last run" not in body
+
+
+def test_the_codex_page_survives_a_genre_score_stored_as_a_bare_number(client):
+    """A codex version is never rewritten in place, so every shape this key
+    has ever carried stays readable forever — codex.scored() is written to
+    tolerate them and brief_context() renders this body fine. The console must
+    not be stricter than the prompt: it used to index every stored value as a
+    dict while sorting, and took the page down on a body the Director briefs
+    from happily."""
+    import json
+
+    from dailyfive.codex import SEED_CODEX, save_new_version
+    body = json.loads(json.dumps(SEED_CODEX))
+    body["learned"]["genre_scores"] = {"country": 7.4,
+                                       "pop": {"mean": 6.0, "n": 9},
+                                       "folk": {"mean": None}}
+    save_new_version(body, [], diff="test", rationale="test")
+
+    r = client.get("/codex")
+    assert r.status_code == 200
+    assert "7.40" in r.text and "over 0 rated briefs" in r.text
+    assert "6.00" in r.text and "over 9 rated briefs" in r.text
+    assert "<b>folk</b>" not in r.text, "a row with no mean was given one"
+
+
+def test_the_codex_page_says_the_real_reason_its_learned_table_is_empty(client):
+    """The deployed v3 body exactly: two descriptors, both negations, both well
+    over the observation floor. "No descriptor has enough observations behind
+    it yet" is false about the only two rows there are, and it sat directly
+    above a note giving the correct, different reason."""
+    import json
+
+    from dailyfive.codex import SEED_CODEX, save_new_version
+    body = json.loads(json.dumps(SEED_CODEX))
+    body["learned"]["style_scores"] = {"no synths": 6.11, "no pads": 6.11}
+    save_new_version(body, [], diff="test", rationale="test")
+
+    page = client.get("/codex").text
+    assert "no descriptor has enough observations behind it yet" not in page
+    assert "every one of the 2 stored descriptors is a negation" in page
+
+
+def test_the_deploy_smoke_test_asks_for_every_console_page():
+    """The one script that checks production after a deploy enumerates the
+    pages by hand, so a new route is covered only if someone remembers. /genres
+    was not, and it is the heaviest page in the console."""
+    from pathlib import Path
+
+    from dailyfive.web.console import NAV
+    script = (Path(__file__).resolve().parents[1]
+              / "deploy" / "verify-production.sh").read_text()
+    line = next(ln for ln in script.splitlines() if ln.startswith("for p in "))
+    asked = set(line.removeprefix("for p in ").split(";")[0].split())
+    missing = {href for href, _ in NAV} - asked
+    assert not missing, f"verify-production.sh never requests {sorted(missing)}"

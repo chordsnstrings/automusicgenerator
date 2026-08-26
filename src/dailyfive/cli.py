@@ -406,8 +406,9 @@ def cmd_backup(args) -> int:
         print(f"backup written to {path} ({path.stat().st_size / 1e6:.1f} MB)")
         return 0
     key = backup.to_storage(keep_local=args.keep)
-    print(f"backup stored at {key}" if key else
-          "backup written locally; upload failed — see the log")
+    print(f"backup stored off-site at {key}" if key else
+          "backup written locally only, and there is no off-site copy — see "
+          "the log for whether SPACES_* is unconfigured or the upload failed")
     return 0
 
 

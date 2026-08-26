@@ -467,7 +467,8 @@ def _blank_row(label: str, family: str) -> dict:
     return {"label": label, "family": family, "briefed": 0, "clips": 0,
             "shipped": 0, "qc_measured": 0, "qc_passed": 0,
             "rated_n": 0, "taste": None, "taste_raw": None,
-            "producer": None, "reliability": None, "last_briefed": None}
+            "producer": None, "producer_n": 0, "reliability": None,
+            "last_briefed": None}
 
 
 def _finish(row: dict) -> dict:
@@ -486,8 +487,18 @@ def scores(*, now: datetime | None = None) -> dict:
     reliability  QC pass rate. Objective, available from day one, and not a
                  taste claim: it says which families burn credits, not which
                  ones are good.
-    exposure     ``briefed``, the count of briefs. This is what the exploration
-                 bonus consumes.
+    exposure     two counts, and they are not interchangeable. ``briefed`` is
+                 how often the family was asked for; ``rated_n`` is how many of
+                 those briefs came back with a rating. The UCB1 bonus in
+                 :func:`slate` consumes ``rated_n``, because the bonus measures
+                 uncertainty about the MEAN and only a rated brief reduces
+                 that. The operational consequence is worth predicting rather
+                 than discovering: a family briefed every day whose songs are
+                 never rated keeps ``rated_n == 0`` and stays on the unsampled
+                 branch indefinitely, so it is picked ahead of the leader for
+                 as long as the rating coverage stays at zero. That is UCB1
+                 behaving correctly on the evidence it has, and the fix for it
+                 is rating the songs, not changing the counter.
 
     Everything else a clip carries is excluded from taste on purpose.
     ``score_trend`` scores fit to the signal sheet, and the signal sheet is
@@ -592,6 +603,12 @@ def scores(*, now: datetime | None = None) -> dict:
         row = families.get(label) or specifics.get(label)
         if row is not None and vals:
             row["producer"] = round(sum(vals) / len(vals), 2)
+            # Carried beside the mean, not derivable from any other column on
+            # the row: it counts scored CLIPS where every other count on the
+            # row is briefs, and two clips of a pair are one decision. A cell
+            # that printed the number without it would be the bare average this
+            # module exists to stop printing.
+            row["producer_n"] = len(vals)
 
     for row in list(families.values()) + list(specifics.values()):
         _finish(row)
@@ -981,8 +998,17 @@ def slate(n: int, *, calibration: dict | None = None, external: dict | None = No
                     stance.pop(give_back, None)
                 picked[lead] = picked.get(lead, 0) + 1
                 n_hat[lead] += 1
-                reason[lead] = (f"thin regime: one extra brief of {n} to the only "
-                                f"ranked leader, at {fams[lead]['taste']:.1f} over "
+                # Counted, not assumed to be one. The thin regime holds while
+                # EITHER fewer than GENRE_WARM_FAMILIES are ranked OR fewer than
+                # GENRE_WARM_TOTAL briefs are rated, so it is reached with three
+                # ranked families and 24 ratings — and this sentence is printed
+                # verbatim in the console's "Why picked" column beside a table
+                # showing all three.
+                n_ranked = sum(1 for r in fams.values() if r["taste"] is not None)
+                reason[lead] = (f"thin regime: one extra brief of {n} to the "
+                                f"highest-scoring of the {n_ranked} ranked "
+                                f"famil{'y' if n_ranked == 1 else 'ies'}, at "
+                                f"{fams[lead]['taste']:.1f} over "
                                 f"{fams[lead]['rated_n']} rated briefs")
                 stance[lead] = "exploit"
 
@@ -1124,16 +1150,28 @@ def enforce(specs: list[dict], slate_rows: list[dict]) -> dict:
     counts: dict[str, int] = defaultdict(int)
     off_vocabulary: list[str] = []
     off_slate: list[dict] = []
+    unlabelled = 0
 
     for spec in specs:
-        raw = spec.get("genre_family") or spec.get("genre")
+        # Three places, in this order, and the last one is the one that fires in
+        # production. director.run() normalises in its own cleaning loop and has
+        # already written the null by the time a spec reaches here, so reading
+        # the two live fields alone recorded an empty string every time and the
+        # ledger counted answers it could not name. genre_off_vocabulary is what
+        # the Director parks the discarded word in.
+        raw = (spec.get("genre_family") or spec.get("genre")
+               or spec.get("genre_off_vocabulary"))
         fam, label = normalise(spec.get("genre_family"), spec.get("genre"))
         spec["genre_family"], spec["genre"] = fam, label
         if fam is None:
-            # Read before the write above lands, or the ledger records the null
-            # it just wrote instead of the word the Director actually chose —
-            # and that word is the whole evidence that a term is missing.
-            off_vocabulary.append(str(raw or "")[:60])
+            unlabelled += 1
+            word = str(raw or "")[:60]
+            # A spec that named no genre at all is counted but contributes no
+            # word: it is evidence that the Director skipped the field, not
+            # evidence that the vocabulary is missing a term, and a blank string
+            # in this list would read as the latter on the console.
+            if word:
+                off_vocabulary.append(word)
             continue
         counts[fam] += 1
         if fam not in wanted:
@@ -1155,5 +1193,5 @@ def enforce(specs: list[dict], slate_rows: list[dict]) -> dict:
         "over_cap": over,
         "off_slate": off_slate,
         "off_vocabulary": off_vocabulary,
-        "unlabelled": len(off_vocabulary),
+        "unlabelled": unlabelled,
     }
