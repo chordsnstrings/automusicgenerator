@@ -161,6 +161,17 @@ class Brief(Base):
     style_string: Mapped[str | None] = mapped_column(Text)
     negative_tags: Mapped[str | None] = mapped_column(Text)
 
+    # The one controlled term in a brief otherwise made of prose. String and
+    # not Enum, though RunPhase, JobState and SlotType next door are all native
+    # Enums: those three are closed sets that will not grow, while a genre
+    # vocabulary is expected to. A Postgres ENUM can never drop a value, and
+    # ALTER TYPE ADD VALUE historically cannot run inside a transaction block —
+    # which is what Alembic wraps every migration in — so Enum would turn
+    # "add a genre" from a one-line constant edit into a migration with a
+    # caveat. The closed set is enforced in genres.normalise() at write time.
+    genre_family: Mapped[str | None] = mapped_column(String(24))
+    genre: Mapped[str | None] = mapped_column(String(40))
+
     diversity_vector: Mapped[dict] = mapped_column(JSON, default=dict)
     lyrics: Mapped[str | None] = mapped_column(Text)
     lyric_hash: Mapped[str | None] = mapped_column(String(64))
@@ -214,6 +225,18 @@ class Clip(Base):
     Everything the Archivist needs to answer "which style strings actually
     work" lives here, denormalised on purpose — a query that has to join five
     tables to compare two prompts does not get written.
+
+    ``genre_family`` and ``genre`` are the genre that was ASKED FOR, copied
+    from the brief. Nothing in this pipeline observes what actually came back:
+    Suno echoes the submitted style string into ``tags`` unchanged, and QC is
+    ffmpeg-only — loudness, true peak, silence, duration, nothing that
+    identifies a genre. So there is no ``genre_observed`` column, because an
+    always-null one would advertise a capability that does not exist and invite
+    a join that silently returns nothing. The day a classifier exists, the
+    observed value goes in a new column beside these two. Until then the free
+    proxy for drift is that the two clips of a pair share a brief, a prompt and
+    a genre: persistent high within-pair score variance for a family means the
+    prompt is not controlling the outcome.
     """
     __tablename__ = "clips"
 
@@ -228,6 +251,8 @@ class Clip(Base):
     # What produced it — denormalised so a single SELECT answers "what worked".
     slot_type: Mapped[SlotType] = mapped_column(Enum(SlotType))
     theme: Mapped[str | None] = mapped_column(Text)
+    genre_family: Mapped[str | None] = mapped_column(String(24))
+    genre: Mapped[str | None] = mapped_column(String(40))
     style_string: Mapped[str | None] = mapped_column(Text)
     negative_tags: Mapped[str | None] = mapped_column(Text)
     persona_id: Mapped[str | None] = mapped_column(String(120))

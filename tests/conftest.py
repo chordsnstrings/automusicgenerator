@@ -34,6 +34,7 @@ NEUTRALISED = (
     "GENIUS_ACCESS_TOKEN", "REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET",
     "LLM_DEFAULT", "AUDIO_STORE",
     "FULL_BRIEFS", "FULL_SLOTS", "SHORT_BRIEFS", "SHORT_SLOTS", "SHORT_DURATION_S",
+    "GENRE_EXPLORE_BRIEFS",
 )
 
 
@@ -85,6 +86,7 @@ def brief_factory(run_id):
                 lyrics=kw.get("lyrics", "[Verse]\nline one\n[Chorus]\nthe hook"),
                 lyric_hash=kw.get("lyric_hash", f"hash{idx}"),
                 vocal_gender=kw.get("vocal_gender", "f"),
+                genre_family=kw.get("genre_family"), genre=kw.get("genre"),
                 negative_tags=kw.get("negative_tags", "lo-fi, muddy mix"),
             )
             s.add(b)
