@@ -172,3 +172,34 @@ def test_local_and_spaces_agree_on_key_layout(monkeypatch, tmp_path):
     reload_settings()
     assert LocalStore().key_for("2026-08-27", "manifest.json") == \
         "songs/2026-08-27/manifest.json"
+
+
+def test_every_third_party_import_is_a_declared_dependency():
+    """A module that works on a dev machine because it was pip-installed by
+    hand is a crash on the first clean build. alembic was exactly that."""
+    import ast
+    import pathlib
+    import sys
+    import tomllib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    meta = tomllib.load(open(root / "pyproject.toml", "rb"))["project"]
+    declared = set()
+    for spec in meta["dependencies"] + sum(meta.get("optional-dependencies", {}).values(), []):
+        declared.add(spec.split(">=")[0].split("[")[0].split("==")[0].strip().lower())
+
+    alias = {"dotenv": "python-dotenv", "botocore": "boto3"}
+    stdlib = set(sys.stdlib_module_names)
+    missing = {}
+    for f in (root / "src").rglob("*.py"):
+        for node in ast.walk(ast.parse(f.read_text())):
+            mods = []
+            if isinstance(node, ast.Import):
+                mods = [a.name.split(".")[0] for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                mods = [node.module.split(".")[0]]
+            for m in mods:
+                if m and m not in stdlib and m != "dailyfive":
+                    if alias.get(m, m).lower() not in declared:
+                        missing.setdefault(m, str(f.relative_to(root)))
+    assert not missing, f"undeclared dependencies: {missing}"
