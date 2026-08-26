@@ -1,0 +1,19 @@
+[Unit]
+Description=The Daily Five — delete stored files past their retention window
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=dailyfive
+WorkingDirectory=/opt/dailyfive/current
+EnvironmentFile=/opt/dailyfive/.env
+ExecStart=/opt/dailyfive/venv/bin/dailyfive purge
+TimeoutStartSec=1800
+Nice=10
+IOSchedulingClass=idle
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/dailyfive/work

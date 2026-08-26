@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=dailyfive
-WorkingDirectory=/opt/dailyfive
+WorkingDirectory=/opt/dailyfive/current
 EnvironmentFile=/opt/dailyfive/.env
 ExecStart=/opt/dailyfive/venv/bin/dailyfive serve --host 127.0.0.1 --port 8080
 Restart=always

@@ -1,0 +1,19 @@
+[Unit]
+Description=The Daily Five — database backup
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=dailyfive
+WorkingDirectory=/opt/dailyfive/current
+EnvironmentFile=/opt/dailyfive/.env
+ExecStart=/opt/dailyfive/venv/bin/dailyfive backup --local-only --keep 14
+TimeoutStartSec=3600
+Nice=10
+IOSchedulingClass=idle
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/dailyfive/work

@@ -1,0 +1,12 @@
+[Unit]
+Description=Purge expired audio daily
+
+[Timer]
+# After the run, not before: a purge that races the run can delete something
+# the run is still writing. 03:00 UTC is well clear of the 05:10 window.
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

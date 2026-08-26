@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 User=dailyfive
-WorkingDirectory=/opt/dailyfive
+WorkingDirectory=/opt/dailyfive/current
 EnvironmentFile=/opt/dailyfive/.env
 ExecStart=/opt/dailyfive/venv/bin/dailyfive run
 # A run that outlives this has hung; the timer will start a fresh one tomorrow
