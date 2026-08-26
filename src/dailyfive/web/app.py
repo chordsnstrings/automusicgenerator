@@ -51,7 +51,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "HEAD", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type"],
     max_age=86400,
 )
@@ -63,7 +63,7 @@ def _check_secret(secret: str) -> None:
         raise HTTPException(status_code=404, detail="not found")
 
 
-@app.get("/healthz")
+@app.api_route("/healthz", methods=["GET", "HEAD"])
 def liveness() -> dict:
     """Is the process alive? Nothing more.
 
@@ -77,7 +77,7 @@ def liveness() -> dict:
     return {"ok": True}
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 def health(response: Response) -> dict:
     """Liveness plus the two things that actually go wrong unattended.
 
@@ -268,7 +268,7 @@ async def submit_rating(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "clip_id": clip_id, "rating": rating})
 
 
-@app.get("/ratings")
+@app.api_route("/ratings", methods=["GET", "HEAD"])
 def existing_ratings(clip_ids: str = "") -> dict:
     """Ratings already recorded for these clips.
 
@@ -318,7 +318,7 @@ def _chunks(key: str, start: int, end: int):
         pos += len(blob)
 
 
-@app.get("/files/{key:path}")
+@app.api_route("/files/{key:path}", methods=["GET", "HEAD"])
 def serve_file(key: str, request: Request) -> Response:
     """Stream a delivered file out of the database.
 
@@ -360,6 +360,22 @@ def serve_file(key: str, request: Request) -> Response:
         if request.headers.get("if-none-match") == f'"{etag}"':
             return Response(status_code=304, headers=headers)
 
+    if request.method == "HEAD":
+        # Returning here rather than falling through is the entire fix. Starlette
+        # does not strip a body on HEAD — it runs the generator to exhaustion and
+        # hands every chunk to the ASGI layer, and it is uvicorn, one hop further
+        # out, that discards them. Falling through would therefore cost ~60
+        # substr() round trips and ~60 MB through a 512 MB container to produce a
+        # Content-Length already computed above, which is strictly worse than the
+        # 405 this replaced. Range is ignored deliberately: RFC 9110 §14.2 defines
+        # range handling for GET only, so a HEAD answers 200 with the length of
+        # the whole representation and never 206 or 416. That is also the only
+        # honest answer, since a HEAD asks how big the file is and reporting a
+        # slice length would misstate it. Accept-Ranges is already in headers, so
+        # the client still learns it may range the GET that follows.
+        headers["Content-Length"] = str(total)
+        return Response(status_code=200, media_type=ctype, headers=headers)
+
     rng = request.headers.get("range")
     start, end = 0, total - 1
     partial = False
@@ -395,14 +411,14 @@ def serve_file(key: str, request: Request) -> Response:
                              media_type=ctype, headers=headers)
 
 
-@app.get("/storage")
+@app.api_route("/storage", methods=["GET", "HEAD"])
 def storage_usage() -> dict:
     """What the store holds and where it settles. Cheap enough to poll."""
     from ..retention import usage
     return usage()
 
 
-@app.get("/ratings/status")
+@app.api_route("/ratings/status", methods=["GET", "HEAD"])
 def rating_status() -> dict:
     from ..archivist import learning_status
     return learning_status()
@@ -413,13 +429,13 @@ def rating_status() -> dict:
 # the same service because it is the same database and the same one public
 # surface to secure.
 
-@app.get("/runs", response_class=HTMLResponse)
+@app.api_route("/runs", methods=["GET", "HEAD"], response_class=HTMLResponse)
 def console_runs() -> str:
     from . import views
     return views.runs_list()
 
 
-@app.get("/runs/{run_date}", response_class=HTMLResponse)
+@app.api_route("/runs/{run_date}", methods=["GET", "HEAD"], response_class=HTMLResponse)
 def console_run(run_date: str) -> str:
     from datetime import datetime
     from . import views
@@ -433,19 +449,19 @@ def console_run(run_date: str) -> str:
     return body
 
 
-@app.get("/agents", response_class=HTMLResponse)
+@app.api_route("/agents", methods=["GET", "HEAD"], response_class=HTMLResponse)
 def console_agents() -> str:
     from . import views
     return views.agents_page()
 
 
-@app.get("/codex", response_class=HTMLResponse)
+@app.api_route("/codex", methods=["GET", "HEAD"], response_class=HTMLResponse)
 def console_codex() -> str:
     from . import views
     return views.codex_page()
 
 
-@app.get("/files", response_class=HTMLResponse)
+@app.api_route("/files", methods=["GET", "HEAD"], response_class=HTMLResponse)
 def console_files() -> str:
     from . import views
     return views.files_page()
@@ -489,7 +505,7 @@ async def console_rate(request: Request) -> Response:
     return RedirectResponse(f"{back}#clip{clip_id}", status_code=303)
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.api_route("/", methods=["GET", "HEAD"], response_class=HTMLResponse)
 def root() -> str:
     from . import views
     return views.overview()
