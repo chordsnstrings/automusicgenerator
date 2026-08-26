@@ -24,8 +24,17 @@ log = logging.getLogger(__name__)
 
 # UTC. Backup before the run so the copy is of a quiet database; purge well
 # clear of both so it can never race a run that is still writing.
+#
+# retype follows purge because it is the same kind of housekeeping and there is
+# less of the table left to walk once expired rows are gone. It runs daily rather
+# than once by hand because nothing on App Platform runs the CLI — there is no
+# jobs key in the spec — and because a one-shot repair cannot catch a row written
+# by an old container mid rolling deploy or restored from a pre-fix backup. On a
+# clean table it matches nothing and issues no UPDATE, so the standing cost is
+# one query a day.
 SLOTS = (
     ("purge", 3, 0),
+    ("retype", 3, 5),
     ("backup", 4, 30),
     ("run", 5, 10),
 )
@@ -87,6 +96,9 @@ def _fire(name: str) -> None:
         elif name == "purge":
             from .retention import purge
             log.info("purge: %s", purge())
+        elif name == "retype":
+            from .storage import retype_stored_files
+            log.info("retype: %s", retype_stored_files())
         elif name == "backup":
             from .backup import dump
             path = dump()

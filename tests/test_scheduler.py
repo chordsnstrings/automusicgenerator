@@ -22,7 +22,7 @@ def _at(hour, minute):
 def test_slots_are_ordered_so_nothing_races_the_run():
     """Backup wants a quiet database; purge must never race a run mid-write."""
     order = [name for name, _, _ in scheduler.SLOTS]
-    assert order == ["purge", "backup", "run"]
+    assert order == ["purge", "retype", "backup", "run"]
     times = [h * 60 + m for _, h, m in scheduler.SLOTS]
     assert times == sorted(times), "slots must fire in clock order"
     run_at = next(h * 60 + m for n, h, m in scheduler.SLOTS if n == "run")

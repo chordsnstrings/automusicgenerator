@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from dailyfive import pipeline as pl
+from dailyfive.config import settings
 from dailyfive.db import session_scope
 from dailyfive.models import Brief, Clip, Decision, Job, Run, RunPhase, Signal
 from dailyfive.qc import QCMetrics
@@ -151,9 +152,10 @@ def wired(monkeypatch, tmp_path):
     monkeypatch.setattr("dailyfive.conductor.download", fake_download)
     monkeypatch.setattr("dailyfive.http.download", fake_download)
 
-    # QC: real verdict logic, faked measurement (no ffmpeg in CI). The duration
-    # has to match the slot type — QC correctly rejects a 192-second "short cut",
-    # so a fake that ignores slot type would fail the whole short lane.
+    # QC: real verdict logic, faked measurement (no ffmpeg in CI). The fake still
+    # measures by slot type although the short lane is off: QC correctly rejects a
+    # 192-second "short cut", so a slot-blind fake would silently fail the whole
+    # lane the day SHORT_BRIEFS goes back above zero.
     def fake_measure(path):
         with session_scope() as s:
             clip = s.query(Clip).filter(Clip.local_path == str(path)).one_or_none()
@@ -177,7 +179,7 @@ def test_a_full_day_runs_end_to_end(wired):
     summary = pl.run_daily(date(2026, 8, 27))
 
     assert summary["clips"] == 14, "7 briefs x 2 clips each"
-    assert summary["shipped"] == 5, "3 full + 2 short"
+    assert summary["shipped"] == 5, "5 slots, all full-length"
 
     with session_scope() as s:
         run = s.query(Run).one()
@@ -188,10 +190,11 @@ def test_a_full_day_runs_end_to_end(wired):
         assert s.query(Job).count() == 7
         assert s.query(Decision).count() == 1
 
+        cfg = settings()
         shipped = s.query(Clip).filter(Clip.shipped.is_(True)).all()
-        assert len(shipped) == 5
-        assert sum(1 for c in shipped if c.slot_type.value == "full") == 3
-        assert sum(1 for c in shipped if c.slot_type.value == "short") == 2
+        assert len(shipped) == cfg.total_slots
+        assert sum(1 for c in shipped if c.slot_type.value == "full") == cfg.full_slots
+        assert sum(1 for c in shipped if c.slot_type.value == "short") == cfg.short_slots
 
 
 def test_every_clip_is_recorded_not_just_the_shipped_ones(wired):
@@ -262,3 +265,47 @@ def test_a_crash_mid_run_resumes_without_paying_twice(wired, monkeypatch):
     summary = pl.run_daily(date(2026, 8, 27))
     assert wired["suno"].tasks == tasks, "resume must not re-submit"
     assert summary["shipped"] == 5
+
+
+def test_an_unconfigured_cover_model_is_stated_once_and_never_as_an_error(wired,
+                                                                         monkeypatch):
+    """Production logged five ERRORs a day for a key nobody intends to set.
+
+    ARK_API_KEY is unset for the whole suite, so this is the deployed shape. The
+    run must say so once, at WARNING, and record it where the console can read
+    it — and no song may claim a cover.jpg that was never written.
+    """
+    import json
+
+    from dailyfive import packager
+
+    said: list[tuple[str, str]] = []
+    monkeypatch.setattr(pl.log, "warning",
+                        lambda msg, *a: said.append(("warning", msg % a if a else msg)))
+    monkeypatch.setattr(pl.log, "error",
+                        lambda msg, *a: said.append(("error", msg % a if a else msg)))
+
+    def refuse(*a, **kw):
+        raise AssertionError("cover_art must not be reached with no key configured")
+    monkeypatch.setattr(pl, "cover_art", refuse)
+    monkeypatch.setattr(packager, "cover_art", refuse)
+
+    pl.run_daily(date(2026, 8, 27))
+
+    art = [m for lvl, m in said if "cover art" in m]
+    assert len(art) == 1, f"once per run, not once per song: {art}"
+    assert "ARK_API_KEY unset" in art[0]
+    assert not [m for lvl, m in said if lvl == "error" and "cover art" in m]
+
+    with session_scope() as s:
+        assert s.query(Run).one().notes["art"] == {"configured": False,
+                                                   "reason": "ARK_API_KEY unset"}
+
+    # FakeSpaces records the local path for an upload, not the bytes.
+    metas = [json.loads(Path(v).read_text()) for k, v in wired["spaces"].objects.items()
+             if k.endswith("meta.json")]
+    assert len(metas) == 5
+    assert all(m["files"]["cover"] is None for m in metas), \
+        "a manifest must not name a file that is not in the folder"
+    assert all("cover" in m["files"] for m in metas), "the key is reserved, not deleted"
+    assert not [k for k in wired["spaces"].objects if k.endswith("cover.jpg")]

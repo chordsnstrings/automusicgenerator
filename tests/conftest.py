@@ -23,12 +23,17 @@ os.environ.setdefault("SUNO_MODEL", "V5_5")
 # These are set to "" rather than deleted: python-dotenv skips any key already
 # present in the environment, but an unset key is not present, so deleting one
 # invites dotenv to put the real value straight back.
+#
+# The run shape is neutralised for a second reason: it is part of the product, so
+# the suite should exercise the defaults in config.py rather than whatever counts a
+# developer's .env happens to carry.
 NEUTRALISED = (
     "SUNO_API_KEY", "ANTHROPIC_API_KEY", "MINIMAX_API_KEY", "ARK_API_KEY",
     "LLM_API_KEY", "SPACES_KEY", "SPACES_SECRET", "SPACES_BUCKET",
     "SPACES_ENDPOINT", "YOUTUBE_API_KEY", "LASTFM_API_KEY",
     "GENIUS_ACCESS_TOKEN", "REDDIT_CLIENT_ID", "REDDIT_CLIENT_SECRET",
     "LLM_DEFAULT", "AUDIO_STORE",
+    "FULL_BRIEFS", "FULL_SLOTS", "SHORT_BRIEFS", "SHORT_SLOTS", "SHORT_DURATION_S",
 )
 
 

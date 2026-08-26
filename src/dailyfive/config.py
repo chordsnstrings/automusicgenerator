@@ -120,10 +120,18 @@ class Settings:
             _s("DATABASE_URL", "sqlite:///dailyfive.db")))
 
     # Run shape
-    full_briefs: int = field(default_factory=lambda: _i("FULL_BRIEFS", 4))
-    full_slots: int = field(default_factory=lambda: _i("FULL_SLOTS", 3))
-    short_briefs: int = field(default_factory=lambda: _i("SHORT_BRIEFS", 3))
-    short_slots: int = field(default_factory=lambda: _i("SHORT_SLOTS", 2))
+    full_briefs: int = field(default_factory=lambda: _i("FULL_BRIEFS", 7))
+    full_slots: int = field(default_factory=lambda: _i("FULL_SLOTS", 5))
+    # The short-form lane is off. Suno bills per generation regardless of length,
+    # so a 45-second cut costs exactly what a four-minute song costs; two short
+    # slots were spending a quarter of the day's credits on ninety seconds of
+    # music. Seven briefs still buy seven generations — the surplus is now two
+    # full-length briefs for one contest of five. Setting these two above zero
+    # brings the lane back; nothing else has to change.
+    short_briefs: int = field(default_factory=lambda: _i("SHORT_BRIEFS", 0))
+    short_slots: int = field(default_factory=lambda: _i("SHORT_SLOTS", 0))
+    # Read only when the short lane is on, but still range-checked, so a bad
+    # value is caught when the lane is switched on rather than on the run after.
     short_duration_s: int = field(default_factory=lambda: _i("SHORT_DURATION_S", 45))
     daily_credit_cap: int = field(default_factory=lambda: _i("DAILY_CREDIT_CAP", 800))
     # Polling cadence. Generation takes 60-90s, so a 20s interval notices

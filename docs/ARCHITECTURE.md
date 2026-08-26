@@ -1,7 +1,7 @@
 # The Daily Five — architecture
 
-An unattended pipeline that produces **five finished songs every day** — WAV, MP3,
-cover art and timestamped lyrics — into a dated folder on DigitalOcean Spaces.
+An unattended pipeline that produces **five finished songs every day** — WAV, MP3
+and timestamped lyrics — into a dated folder on DigitalOcean Spaces.
 
 Status: **v0.3 — implemented.** All five decisions settled; 93 tests pass.
 Nothing has run against a live API yet because no credentials are configured.
@@ -16,7 +16,7 @@ linked from the PR/issue this branch came from.
 
 | | |
 |---|---|
-| Ships daily | 5 songs — 3 full-length, 2 short-form — as `master.wav`, `master.mp3`, `cover.jpg`, `lyrics.lrc`, `meta.json` |
+| Ships daily | 5 songs — all full-length — as `master.wav`, `master.mp3`, `lyrics.txt`, `lyrics.lrc`, `meta.json`. `cover.jpg` only where ModelArk is configured; it is not |
 | Renders daily | 14 candidates (7 generations x 2 clips) |
 | Storage | DigitalOcean Spaces, one immutable dated folder per run |
 | Run window | ~90 minutes, mostly spent waiting on Suno |
@@ -94,15 +94,16 @@ audio is fine.
   instrumentation palette, vocal register, mix reference). Also holds the **persona
   cast** — 2-3 recurring acts, each with a fixed voice and sonic territory. Encodes
   *characteristics*, never "in the style of [named artist]" — which Suno rejects anyway.
-- **A&R** — turns themes and specs into seven **typed** briefs (four full-length,
-  three short-form), assigns each a persona from the cast, and enforces spread across
-  genre, tempo and mood, checked against the last 14 days.
+- **A&R** — turns themes and specs into seven briefs, assigns each a persona from
+  the cast, and enforces spread across genre, tempo and mood, checked against the last
+  14 days.
 - **Lyricist** — two drafts per brief, self-selects one, works to the Director's song
   form so structure tags match the arrangement the prompt requests.
 - **Clearance** — deterministic blocklist pass, then a model pass. Named living
   artists, lyric fragments echoing real songs, trademarks, filter-tripping language.
 - **Prompt Compiler** — compiles a brief into a valid Suno payload and nothing else,
-  including `personaId` and — on short-form briefs only — an explicit `duration`.
+  including `personaId` and, when the short-form lane is switched on, an explicit
+  `duration`.
   Enforces per-model character limits before the request leaves the building.
 - **Conductor** — not creative. Fires generations, receives webhooks, polls when they
   do not arrive, retries with backoff, tracks spend against a daily cap, mirrors every
@@ -115,11 +116,13 @@ audio is fine.
   ffmpeg is needed for encoding regardless, so this adds no dependency.
 - **Producer** — three independent scoring passes (hook strength in the first seven
   seconds, vocal and mix quality, fit to today's trend sheet), then fills each slot
-  from its own contest — three full-length, two short — and writes down why each
+  then fills the five slots from a field of fourteen and writes down why each
   rejection lost.
-- **Packager** — requests the true WAV, encodes 320kbps MP3, generates cover art at
-  3000x3000, writes ID3 tags and a timestamped `.lrc`, uploads the dated folder and
-  manifest. Emits the `distribution` block in every `meta.json` — schema present,
+- **Packager** — requests the true WAV, encodes 320kbps MP3, writes ID3 tags and a
+  timestamped `.lrc`, uploads the dated folder and manifest. Cover art at 3000x3000
+  is an optional ModelArk integration: with no `ARK_API_KEY` it is skipped, the run
+  says so once at WARNING, and `meta.json` records `"cover": null` rather than
+  naming a file that is not there. Emits the `distribution` block in every `meta.json` — schema present,
   values null.
 - **Archivist** — one row per clip, shipped or not, joining brief, exact style string,
   every parameter, QC metrics, producer score and rejection reason.
@@ -165,12 +168,13 @@ forming an opinion about them.
 
 ```
 7 briefs  ->  14 clips  ->  QC gate  ->  producer  ->  5 shipped
-4 full                      ~11 pass                   3 full + 2 short
-3 short                      ~3 cut                    6 held as reference
+all full-length             ~11 pass                   6 held as reference
+                             ~3 cut
 ```
 
-Surplus is sized per slot type: four full-length briefs contest three slots, three
-short-form contest two. A short-form cut cannot fill a full-length slot.
+Surplus is two briefs: seven full-length briefs contest five slots. Slots are still
+typed and a short-form cut could not fill a full-length one, but the short-form lane is
+set to zero briefs and zero slots, so every candidate contests every slot.
 
 Everything left of the producer runs **per-clip and independently** — a slow generation
 does not hold up the others. The producer is the single barrier, because ranking
@@ -228,8 +232,8 @@ spaces://<bucket>/songs/2026-08-27/
 ├─ index.html             # 5 players + the rating control that closes the loop
 ├─ 01_slow-burn-in-june/
 │   ├─ master.wav         # Suno WAV, trimmed and faded — deliberately NOT normalised
-│   ├─ master.mp3         # 320 kbps, -14 LUFS, ID3 tags + embedded cover
-│   ├─ cover.jpg          # 3000x3000, Seedream — the size every DSP accepts
+│   ├─ master.mp3         # 320 kbps, -14 LUFS, ID3 tags
+│   ├─ cover.jpg          # 3000x3000, Seedream — ONLY if ARK_API_KEY is set
 │   ├─ lyrics.txt
 │   ├─ lyrics.lrc         # timestamped, from Suno's aligned lyrics
 │   └─ meta.json          # brief, style string, parameters, QC metrics + distribution
@@ -320,7 +324,7 @@ also receives your daily ratings, so there is only one public surface to secure.
 |---|---|---|---|
 | sunoapi.org | music generation, WAV conversion, aligned lyrics | Conductor, Packager | the only irreplaceable dependency |
 | MiniMax | any reasoning role; optional second music supplier | 7 roles | verified live on the full roster; music billing needs PAYG, not just a plan key |
-| BytePlus ModelArk | cover art (Seedream); optional video loops (Seedance) | Packager | no text models exposed — art only |
+| BytePlus ModelArk | cover art (Seedream); optional video loops (Seedance) | Packager | no text models exposed — art only. **Not configured**: no key, so no covers |
 | Any brain | Scout, Director, A&R, Lyricist, Clearance, Producer, Retro | 7 roles | set by `LLM_DEFAULT`; per-role overrides |
 | ffmpeg | QC measurement, mastering, MP3 encode | QC, Packager | local, free, deterministic |
 | DO Spaces | every artefact, forever | Conductor, Packager | S3-compatible; set a lifecycle rule |
@@ -380,10 +384,10 @@ is the weak link.
 | Suno generations | 7 calls -> 14 clips | **confirm against your plan** |
 | Suno WAV conversion | 5 tracks @ ~$0.05 | 0.25 |
 | Lyrics (MiniMax M3) | 14 drafts | ~0.06 |
-| Cover art (Seedream) | 5 images | ~0.20 |
+| Cover art (Seedream) | not configured — 0 images | 0.00 |
 | Claude — 5 agent roles | ~15 calls | ~0.60 |
 | Droplet + Spaces | always on | ~0.60 |
-| **Everything except Suno** | 5 finished songs | **~$1.75/day (~$52/mo)** |
+| **Everything except Suno** | 5 finished songs | **~$1.55/day (~$47/mo)** — ~$1.75 with cover art configured |
 
 Published figure for WAV conversion is $0.05/track; credits run ~$0.005 at entry tiers
 with plans from $19-199/month. Generation credit cost varies by model version — call
@@ -399,10 +403,16 @@ the exact number in a minute.
 — one surface to secure, nothing new to run. Without it the system optimises for the
 Producer agent's opinion, which drifts because nothing ever contradicts it.
 
-**Three full-length songs, two short-form cuts.** Briefs become typed, and surplus has
-to be sized per type — hence seven briefs rather than six. Short cuts set `duration` on
-V5_5 at 30-60s and are briefed differently: hook inside two seconds, built to loop, no
-intro.
+**Five full-length songs.** Suno bills per generation regardless of length, so a
+45-second cut costs exactly what a four-minute song costs — two short-form slots were
+spending about a quarter of the day's credits on ninety seconds of music. Seven briefs
+still buy seven generations and fourteen candidates; the surplus is now two full-length
+briefs for one contest of five, rather than one spare in each of two lanes. This
+reverses the earlier decision to ship three full-length and two short-form cuts, which
+came from reading "scout what is rising on social" as "make clips the length of a social
+post". The lane survives as `SHORT_BRIEFS` and `SHORT_SLOTS`, both zero: the Compiler
+still sets `duration` on V5_5, QC still holds short cuts to their own floor, and setting
+the two counts above zero is all it takes to brief them again.
 
 **Two to three recurring personas.** The Style Codex holds a persona cast alongside its
 production specs; A&R assigns and rotates them, and no persona may take more than half
@@ -501,7 +511,7 @@ Where a model could have been used but was not, because the failure mode of
 getting it wrong is silent:
 
 - **Slot contract.** The Producer's picks are re-checked against the slot counts;
-  a model returning four full picks for three slots gets the top three.
+  a model returning six full picks for five slots gets the top five.
 - **Persona balance.** No act takes more than half the day, enforced after the fact.
 - **Payload limits.** The Compiler has an independent `validate()` that re-derives
   the same rules rather than sharing code with the builder — a validator sharing

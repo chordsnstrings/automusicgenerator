@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -148,12 +149,21 @@ class Codex:
         avoid = self.avoid_list()
         return ", ".join(filter(None, [base, ", ".join(avoid)]))[:900]
 
-    def brief_context(self) -> str:
-        """A compact rendering for prompts. Full JSON would be mostly noise."""
+    def brief_context(self, *, slots: Sequence[str] | None = None) -> str:
+        """A compact rendering for prompts. Full JSON would be mostly noise.
+
+        `slots` narrows the per-lane guidance to the lanes actually being briefed.
+        The codex records what the studio knows how to make; a run asks for a
+        subset of that, and hook placement for a lane with no slots is guidance
+        for a spec that would be thrown away.
+        """
+        hooks = self.body.get("hook_placement", {})
+        if slots is not None:
+            hooks = {k: v for k, v in hooks.items() if k in slots}
         learned = self.body.get("learned", {})
         parts = [
             f"tempo bands: {json.dumps(self.body.get('tempo_bands', {}))}",
-            f"hook placement: {json.dumps(self.body.get('hook_placement', {}))}",
+            f"hook placement: {json.dumps(hooks)}",
             f"mix targets: {json.dumps(self.body.get('mix_targets', {}))}",
             f"palettes: {json.dumps(self.body.get('instrumentation_palettes', [])[:6])}",
         ]

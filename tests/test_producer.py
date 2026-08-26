@@ -44,6 +44,12 @@ def test_duplicate_picks_are_collapsed():
     assert len({p["clip_id"] for p in picks}) == len(picks)
 
 
+def test_a_lane_with_no_slots_takes_nothing():
+    picks = _honour_slots([{"clip_id": 10, "slot_type": "short"}],
+                          _pool(), full_slots=3, short_slots=0)
+    assert [p["slot_type"] for p in picks] == ["full"] * 3
+
+
 def test_mix_scorer_never_sees_the_lyric():
     """Otherwise a good lyric inflates the mix score — the anchoring this avoids."""
     c = {"clip_id": 1, "title": "T", "slot_type": "full",

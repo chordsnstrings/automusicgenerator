@@ -268,6 +268,32 @@ async def submit_rating(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "clip_id": clip_id, "rating": rating})
 
 
+@app.delete("/ratings/{clip_id}")
+async def clear_rating(clip_id: int, request: Request) -> JSONResponse:
+    """Take a rating back.
+
+    DELETE rather than a rating of some sentinel value, because the two are
+    genuinely different actions and a 1-10 widget has no spare value to spend:
+    both write paths reject 0 as out of range, and a mis-tap being permanent is
+    what makes the widget a trap. The rating feeds the Archivist's learning
+    signal and the weekly retro, so a wrong value does not merely sit there — it
+    steers the system until it is removed.
+
+    Open for the same reason POST /ratings is, and with less at stake: the note
+    survives a clear, so this is the least destructive thing an endpoint on this
+    path can do.
+    """
+    if _rate_limited(_client_ip(request)):
+        raise HTTPException(status_code=429, detail="too many ratings; try later")
+
+    with session_scope() as s:
+        if s.get(Clip, clip_id) is None:
+            raise HTTPException(status_code=404, detail="no such clip")
+
+    from ..archivist import unrate
+    return JSONResponse({"ok": True, "clip_id": clip_id, "cleared": unrate(clip_id)})
+
+
 @app.api_route("/ratings", methods=["GET", "HEAD"])
 def existing_ratings(clip_ids: str = "") -> dict:
     """Ratings already recorded for these clips.
@@ -482,20 +508,28 @@ async def console_rate(request: Request) -> Response:
         raise HTTPException(status_code=429, detail="too many ratings; try later")
 
     form = parse_qs((await request.body()).decode("utf-8", "replace"))
+    # The clear button is a second submit inside the same form, so its
+    # submission carries no rating field at all. Branching after parsing would
+    # 400 on every clear.
+    clearing = bool(form.get("clear"))
     try:
         clip_id = int(form.get("clip_id", [""])[0])
-        rating = int(form.get("rating", [""])[0])
+        rating = 0 if clearing else int(form.get("rating", [""])[0])
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="clip_id and rating must be integers")
-    if not 1 <= rating <= 10:
+    if not clearing and not 1 <= rating <= 10:
         raise HTTPException(status_code=400, detail="rating must be 1-10")
 
     with session_scope() as s:
         if s.get(Clip, clip_id) is None:
             raise HTTPException(status_code=404, detail="no such clip")
 
-    from ..archivist import rate
-    rate(clip_id, rating)
+    if clearing:
+        from ..archivist import unrate
+        unrate(clip_id)
+    else:
+        from ..archivist import rate
+        rate(clip_id, rating)
 
     # Never redirect off this origin on the strength of a form field: "//host"
     # is a protocol-relative URL, not a path on this site.

@@ -25,6 +25,55 @@ log = logging.getLogger(__name__)
 
 PROVIDER = "spaces"
 
+# What an artifact is announced as must not be a property of whichever packages
+# the base image happens to carry. mimetypes.guess_type() consults
+# /etc/mime.types when it is present, so the same filename resolves differently
+# on a developer box (which has the media-types package) and in python:3.12-slim
+# (which does not), and CPython moved the built-in .wav mapping in 3.13 — a
+# routine base-image bump would silently change what production serves for every
+# WAV, with no code change and no test to notice. Pinning the handful of
+# extensions this studio actually writes makes the answer a decision instead of
+# an accident; anything unlisted still falls back to guess_type.
+#
+# .lrc is the one a reader will want to argue with. There is no registered IANA
+# type for LRC, so there is nothing to be faithful to, and the tempting
+# invention text/lrc is worse than useless: a browser displays only the text/
+# subtypes it recognises and downloads the rest, so a made-up subtype reproduces
+# the exact symptom being fixed and lies about the format as well. text/plain is
+# the only type that both renders inline and survives the nosniff header this
+# origin has to send, and it costs nothing downstream because LRC-aware players
+# parse the file, never the HTTP header. The charset is not decorative — lyrics
+# carry em-dashes and accented characters. It is spelled out here rather than
+# left to Starlette, which appends it to any text/ media type on the way out,
+# because that rescue exists only on the database path and the S3 path returns
+# whatever was stored.
+CONTENT_TYPES = {
+    ".wav": "audio/wav",
+    ".mp3": "audio/mpeg",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".txt": "text/plain; charset=utf-8",
+    ".lrc": "text/plain; charset=utf-8",
+    ".json": "application/json",
+    ".html": "text/html; charset=utf-8",
+    # A backup is dailyfive-<stamp>.sql.gz, and guess_type answers
+    # ('application/sql', 'gzip') — both callers take [0] and drop the encoding,
+    # so the bytes of a gzip stream would be announced as SQL text. RFC 6713's
+    # application/gzip describes the container, which is the only thing one
+    # content_type column can honestly say about it.
+    ".gz": "application/gzip",
+}
+
+
+def content_type_for(name: str) -> str:
+    """What to stamp into stored_files.content_type for a file of this name."""
+    lowered = name.lower()
+    for ext, ctype in CONTENT_TYPES.items():
+        if lowered.endswith(ext):
+            return ctype
+    return mimetypes.guess_type(name)[0] or "application/octet-stream"
+
 
 class LocalStore:
     """Filesystem stand-in for Spaces, used when no bucket is configured.
@@ -120,8 +169,7 @@ class DatabaseStore:
         if not local.is_file():
             raise ProviderError("database", f"nothing to upload at {local}",
                                 retryable=False)
-        return self._put(local.read_bytes(), key,
-                         mimetypes.guess_type(local.name)[0] or "application/octet-stream",
+        return self._put(local.read_bytes(), key, content_type_for(local.name),
                          clip_id=clip_id, run_id=run_id)
 
     def put_text(self, body: str, key: str, *, content_type: str = "application/json",
@@ -191,6 +239,54 @@ class DatabaseStore:
                                 retryable=False) from exc
 
 
+def retype_stored_files(dry_run: bool = False) -> dict:
+    """Bring rows already in the table into line with CONTENT_TYPES.
+
+    The content type is stamped at write time, so fixing the derivation does
+    nothing for the rows that are already wrong — and there is no read hook on
+    the Spaces path at all, which is the argument against recomputing this on
+    the way out. Recomputing on read would also leave the column permanently
+    wrong while it is still what the S3 mirror sends, what a restore carries and
+    what _kind_for consults, which is two sources of truth drifting apart.
+
+    Deliberately a re-runnable command rather than an Alembic data migration. A
+    migration fires once, guarded by alembic_version, and there is no way to
+    make it fire again without hand-editing that table — so a row written wrong
+    by an old container mid rolling deploy, or restored from a backup taken
+    before the fix, stays wrong forever. This is idempotent by construction: on
+    a clean table the comparison matches nothing and it issues no UPDATE.
+
+    Columns are selected by name so `data` is never loaded; a table of masters
+    is tens of megabytes a row and this walks all of them.
+    """
+    from sqlalchemy import select, update
+
+    from .db import session_scope
+    from .models import StoredFile
+
+    checked, fixed = 0, {}
+    with session_scope() as s:
+        rows = s.execute(select(StoredFile.id, StoredFile.key,
+                                StoredFile.content_type)).all()
+        for row_id, key, stored in rows:
+            checked += 1
+            correct = content_type_for(key.rsplit("/", 1)[-1])
+            if stored == correct:
+                continue
+            fixed[correct] = fixed.get(correct, 0) + 1
+            if not dry_run:
+                s.execute(update(StoredFile)
+                          .where(StoredFile.id == row_id)
+                          .values(content_type=correct))
+
+    total = sum(fixed.values())
+    if total:
+        log.info("retype: %d of %d stored files %s (%s)", total, checked,
+                 "would be corrected" if dry_run else "corrected",
+                 ", ".join(f"{n} -> {t}" for t, n in sorted(fixed.items())))
+    return {"checked": checked, "fixed": total, "by_type": fixed}
+
+
 def _kind_for(key: str, content_type: str) -> str:
     name = key.rsplit("/", 1)[-1].lower()
     if name.endswith(".wav"):
@@ -256,7 +352,7 @@ class Spaces:
         local = Path(local)
         if not local.is_file():
             raise ProviderError(PROVIDER, f"nothing to upload at {local}", retryable=False)
-        ctype = mimetypes.guess_type(local.name)[0] or "application/octet-stream"
+        ctype = content_type_for(local.name)
         extra = {"ContentType": ctype}
         if public:
             extra["ACL"] = "public-read"

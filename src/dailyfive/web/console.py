@@ -85,6 +85,7 @@ td audio{width:15rem;min-width:15rem;max-width:none;height:2rem}
       color:var(--dim);border:1px solid var(--rule);border-radius:2px;cursor:pointer}
 .rate button:hover{color:var(--ink);border-color:var(--hot)}
 .rate button[aria-pressed=true]{color:var(--hot);border-color:var(--hot)}
+.rate button.clear{margin-left:.4rem;border-color:transparent;text-decoration:underline;color:var(--faint)}
 .rate .done{color:var(--faint);font-size:.7rem;margin-left:.35rem}
 a{color:var(--hot)}
 a.q{color:var(--ink);text-decoration:none;border-bottom:1px solid var(--rule)}
@@ -127,15 +128,32 @@ document.addEventListener('submit', async ev => {
   const form = ev.target.closest('form[data-rate]');
   if (!form || !ev.submitter) return;          // no submitter: let the browser post
   ev.preventDefault();
-  const score = Number(ev.submitter.value);
+  const id = Number(form.dataset.rate);
   const out = form.querySelector('.done');
-  form.querySelectorAll('button[name=rating]').forEach(b =>
+  const buttons = form.querySelectorAll('button[name=rating]');
+
+  if (ev.submitter.name === 'clear') {
+    buttons.forEach(b => b.setAttribute('aria-pressed', 'false'));
+    out.textContent = 'clearing…';
+    try {
+      const r = await fetch('/ratings/' + id, {method: 'DELETE'});
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      out.textContent = '';
+      ev.submitter.remove();
+    } catch (e) {
+      out.textContent = 'could not clear (' + e.message + ') — reload and try again';
+    }
+    return;
+  }
+
+  const score = Number(ev.submitter.value);
+  buttons.forEach(b =>
     b.setAttribute('aria-pressed', Number(b.value) === score ? 'true' : 'false'));
   out.textContent = 'saving…';
   try {
     const r = await fetch('/ratings', {method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({clip_id: Number(form.dataset.rate), rating: score})});
+      body: JSON.stringify({clip_id: id, rating: score})});
     if (!r.ok) throw new Error('HTTP ' + r.status);
     out.textContent = 'rated ' + score + '/10';
   } catch (e) {

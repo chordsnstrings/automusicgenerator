@@ -116,7 +116,14 @@ CARDS.forEach(card=>{
     const {ratings}=await r.json();
     CARDS.forEach(card=>{
       const v=ratings[card.dataset.clip];
-      if(v==null) return;
+      // A cleared rating is omitted by /ratings, so returning here would leave
+      // this page showing whatever localStorage remembers — forever, on the one
+      // phone that set it. Absence from the server is an answer, not a gap.
+      if(v==null){
+        mark(card,null,'');
+        try{localStorage.removeItem('rating:'+card.dataset.clip);}catch(e){}
+        return;
+      }
       mark(card,v,'rated '+v+'/10');
       try{localStorage.setItem('rating:'+card.dataset.clip,String(v));}catch(e){}
     });
@@ -160,9 +167,13 @@ def _card(s: dict) -> str:
         _dur(s.get("duration_s")),
     ) if b]
     links = []
+    # download on the audio only. The lyrics are served as text/plain now, so the
+    # browser will render them; the attribute would override that and save the
+    # file instead, which is the behaviour that made the LRC useless to read.
     for label, key in (("WAV", "wav_url"), ("MP3", "mp3_url"), ("Lyrics", "lrc_url")):
         if s.get(key):
-            links.append(f'<a href="{esc(s[key])}" download>{label}</a>')
+            attr = "" if key == "lrc_url" else " download"
+            links.append(f'<a href="{esc(s[key])}"{attr}>{label}</a>')
 
     buttons = "".join(
         f'<button data-score="{n}" aria-pressed="false" '

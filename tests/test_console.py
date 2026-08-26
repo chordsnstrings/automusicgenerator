@@ -72,6 +72,13 @@ def test_every_page_renders_with_data(client, populated, path):
     assert client.get(path).status_code == 200
 
 
+@pytest.mark.parametrize("path", PAGES)
+def test_every_page_answers_head(client, path):
+    """FastAPI does not fold HEAD in beside GET the way Starlette does, so
+    every console page answered 405 to a link-checker."""
+    assert client.head(path).status_code == 200
+
+
 def test_every_page_renders_with_an_unusable_brain_config(client, monkeypatch):
     """A misconfigured provider must show as a problem, not crash the console."""
     from dailyfive.config import reload_settings
@@ -282,3 +289,85 @@ def test_the_files_page_never_preloads_three_hundred_sources(client, delivered):
     before anyone pressed play."""
     assert 'preload="none"' in client.get("/files").text
     assert 'preload="metadata"' not in client.get("/files").text
+
+
+def test_the_agents_page_states_that_cover_art_has_no_key(client):
+    """The fact used to live only in an ERROR nobody reads. The Agents page is
+    where an operator looks at configuration, and the brain table already has a
+    component for exactly this."""
+    body = client.get("/agents").text
+    assert "Cover art" in body
+    assert "modelark" in body and "seedream" in body
+    assert "no key" in body
+
+
+def test_the_files_page_does_not_promise_a_cover(client):
+    """Prose cannot 404, which is why it went unnoticed — but it told an
+    operator every delivered folder holds a cover.jpg, and none does."""
+    assert "cover.jpg" not in client.get("/files").text
+
+
+def test_clearing_a_rating_from_the_console_works_without_javascript(client, populated):
+    """A form cannot issue DELETE, so the clear control is a second submit in
+    the same form — and it carries no rating field, which is why console_rate
+    has to branch before it parses one."""
+    with session_scope() as s:
+        clip_id = s.query(Clip).filter(Clip.shipped.is_(True)).one().id
+    client.post("/console/rate", data={"clip_id": clip_id, "rating": 8})
+
+    r = client.post("/console/rate", follow_redirects=False,
+                    data={"clip_id": clip_id, "clear": "1", "back": "/runs/2026-08-27"})
+    assert r.status_code == 303
+    assert r.headers["location"] == f"/runs/2026-08-27#clip{clip_id}"
+    with session_scope() as s:
+        assert s.query(Outcome).filter(Outcome.clip_id == clip_id).one().rating is None
+
+
+def test_the_clear_control_appears_only_once_there_is_a_rating(client, populated):
+    """Offering to undo an unrated song is an invitation to wonder what it
+    would do."""
+    with session_scope() as s:
+        clip_id = s.query(Clip).filter(Clip.shipped.is_(True)).one().id
+    assert 'name="clear"' not in client.get("/runs/2026-08-27").text
+
+    client.post("/console/rate", data={"clip_id": clip_id, "rating": 6})
+    assert 'name="clear"' in client.get("/runs/2026-08-27").text
+
+    client.post("/console/rate", data={"clip_id": clip_id, "clear": "1"})
+    assert 'name="clear"' not in client.get("/runs/2026-08-27").text
+
+
+def test_a_clear_that_names_no_clip_is_still_refused(client):
+    assert client.post("/console/rate", data={"clear": "1"}).status_code == 400
+
+
+def test_the_console_script_clears_without_reloading(client):
+    """Progressive enhancement only — the form posts and redirects on its own —
+    but a reload stops whatever is playing mid-song."""
+    body = client.get("/").text
+    assert "ev.submitter.name === 'clear'" in body
+    assert "method: 'DELETE'" in body
+
+
+def test_the_overview_states_the_shape_the_settings_produce(client, monkeypatch):
+    """The sentence that drifted: the console announced a split of full-length and
+    short-form long after the slot counts stopped producing one, and nothing
+    asserted on it, so it stayed green saying anything at all. Both halves matter —
+    the numbers come from settings, and a lane with no slots is not mentioned."""
+    from dailyfive.config import reload_settings
+
+    for var, value in (("FULL_BRIEFS", "7"), ("FULL_SLOTS", "5"),
+                       ("SHORT_BRIEFS", "0"), ("SHORT_SLOTS", "0")):
+        monkeypatch.setenv(var, value)
+    reload_settings()
+    text = client.get("/").text
+    assert ("5 finished songs a day, unattended, all full-length, "
+            "chosen from 14 candidates.") in text
+    assert "short-form" not in text, "a lane with no slots is not a lane to announce"
+
+    for var, value in (("FULL_BRIEFS", "4"), ("FULL_SLOTS", "3"),
+                       ("SHORT_BRIEFS", "3"), ("SHORT_SLOTS", "2")):
+        monkeypatch.setenv(var, value)
+    reload_settings()
+    assert ("5 finished songs a day, unattended. 3 full-length and 2 short-form, "
+            "chosen from 14 candidates.") in client.get("/").text

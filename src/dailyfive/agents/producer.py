@@ -9,8 +9,10 @@ what makes the ranking informative.
 
 Selection is per slot type. Full-length and short-form candidates never compete,
 because a 45-second loop cannot fill a 3-minute slot no matter how good it is.
-This is why the funnel is four full briefs contesting three slots and three short
-contesting two, rather than seven contesting five.
+Today only the full-length lane has slots — seven briefs contest five — so the
+per-type machinery decides nothing visible. It stays because the lane is a
+setting: the day SHORT_SLOTS goes above zero it is what stops a loop being
+shipped as a song.
 
 The Producer only ever sees clips that already passed measurement. Taste is
 applied to working audio, never used to decide whether audio is working.
@@ -71,7 +73,7 @@ that sound like each other serve the day worse than one excellent and one very \
 good song that do not."""
 
 FINAL_SCHEMA = """{
-  "picks": [{"clip_id": 0, "slot_type": "full|short", "rank": 1, "why": "<= 200 chars"}],
+  "picks": [{"clip_id": 0, "slot_type": "SLOT_TYPES", "rank": 1, "why": "<= 200 chars"}],
   "rejections": [{"clip_id": 0, "reason": "specific, <= 200 chars"}],
   "rationale": "how this set holds together as a day's release, <= 500 chars"
 }"""
@@ -159,6 +161,14 @@ def _view(c: dict, axis: str) -> dict:
             "diversity_vector": c.get("diversity_vector")}
 
 
+def _slot_ask(full_slots: int, short_slots: int) -> str:
+    """Ask for the lanes that have slots. _honour_slots would discard a pick in a
+    lane with none, but the ask is what stops it being made."""
+    parts = [f"{n} {name} slots"
+             for name, n in (("FULL", full_slots), ("SHORT", short_slots)) if n]
+    return f"Fill {' and '.join(parts)}."
+
+
 def _select(candidates: list[dict], signals: dict, *, full_slots: int,
             short_slots: int) -> dict:
     """Ask the model to choose, then enforce the slot contract deterministically."""
@@ -178,10 +188,12 @@ def _select(candidates: list[dict], signals: dict, *, full_slots: int,
     try:
         result = ask_json(
             "producer", FINAL_SYSTEM,
-            f"Fill {full_slots} FULL slots and {short_slots} SHORT slots.\n\n"
+            _slot_ask(full_slots, short_slots) + "\n\n"
             f"Candidates with scores:\n{json.dumps(summary, ensure_ascii=False)}\n\n"
             f"Today's themes:\n{json.dumps(signals.get('themes', [])[:8], ensure_ascii=False)}",
-            schema_hint=FINAL_SCHEMA, max_tokens=3000, temperature=0.5,
+            schema_hint=FINAL_SCHEMA.replace(
+                "SLOT_TYPES", "full|short" if short_slots else "full"),
+            max_tokens=3000, temperature=0.5,
             label="selection")
     except ProviderError as exc:
         log.warning("producer selection failed (%s) — falling back to score order", exc)
@@ -209,8 +221,8 @@ def _honour_slots(model_picks: list[dict], by_type: dict[str, list[dict]], *,
     """The slot contract is not the model's to renegotiate.
 
     Take the model's choices where they are valid, then fill any shortfall from
-    score order. A model that returns four full picks for three slots gets the
-    top three, not an extra release.
+    score order. A model that returns six full picks for five slots gets the
+    top five, not an extra release.
     """
     wanted = {"full": full_slots, "short": short_slots}
     chosen: dict[str, list[int]] = {"full": [], "short": []}

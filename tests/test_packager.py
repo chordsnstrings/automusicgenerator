@@ -46,3 +46,94 @@ def test_meta_records_that_the_wav_is_not_normalised():
                       date(2026, 8, 27), 1, {})
     assert "not loudness normalised" in meta["mastering"]["wav"]
     assert "-14" in meta["mastering"]["mp3"]
+
+
+class _Recorder:
+    """Stands in for packager.log.
+
+    caplog cannot be used for this: the autouse database fixture runs alembic,
+    whose fileConfig disables every logger that already existed when the test
+    module was imported. caplog then captures nothing, and an assertion that
+    nothing was logged at ERROR passes for the wrong reason — which is exactly
+    the assertion that has to bite here.
+    """
+
+    def __init__(self):
+        self.calls: list[tuple[str, str]] = []
+
+    def _at(self, level):
+        return lambda msg, *a: self.calls.append((level, msg % a if a else msg))
+
+    def __getattr__(self, name):
+        return self._at(name)
+
+
+def test_cover_art_declines_quietly_when_no_key_is_configured(tmp_path, monkeypatch):
+    """The gap as production reported it: five ERRORs a day for a key nobody
+    ever intends to set.
+
+    ModelArkClient raises in its constructor when ARK_API_KEY is unset, so the
+    old code asked for a client it already knew could not exist and then logged
+    its own objection. An unconfigured optional integration is a configuration
+    fact; the pipeline states it once per run instead.
+    """
+    from dailyfive import packager
+    from dailyfive.config import reload_settings
+
+    reload_settings()
+    rec = _Recorder()
+    monkeypatch.setattr(packager, "log", rec)
+    assert packager.cover_art({"title": "Spent Tomorrow Twice"},
+                              tmp_path / "cover.jpg") is None
+    assert rec.calls == [], "an unconfigured integration is not an event"
+    assert not (tmp_path / "cover.jpg").exists()
+
+
+def test_an_injected_client_is_still_used_with_no_key_configured(tmp_path, monkeypatch):
+    """The early return must not short-circuit a client the caller supplied —
+    that is the seam every test of this function relies on."""
+    from dailyfive import packager
+
+    class FakeArk:
+        def cover(self, prompt):
+            return "https://example.test/cover.jpg"
+
+    called = {}
+    monkeypatch.setattr(packager, "download",
+                        lambda url, dest, **kw: called.setdefault("url", url))
+    out = packager.cover_art({"title": "T"}, tmp_path / "cover.jpg", client=FakeArk())
+    assert out == tmp_path / "cover.jpg"
+    assert called["url"] == "https://example.test/cover.jpg"
+
+
+def test_a_configured_key_that_fails_is_still_an_error(tmp_path, monkeypatch):
+    """The level is not being lowered across the board. A key that is set and
+    stops working is a real event and must still shout."""
+    from dailyfive import packager
+
+    class Broken:
+        def cover(self, prompt):
+            raise RuntimeError("modelark is down")
+
+    rec = _Recorder()
+    monkeypatch.setattr(packager, "log", rec)
+    assert packager.cover_art({"title": "T"}, tmp_path / "cover.jpg",
+                              client=Broken()) is None
+    assert [lvl for lvl, _ in rec.calls] == ["error"]
+    assert "modelark is down" in rec.calls[0][1]
+
+
+def test_meta_does_not_claim_a_cover_that_was_never_made(tmp_path):
+    """meta.json is machine-readable, and naming a file that is not in the
+    folder is a false statement in it. The key stays and is empty, exactly the
+    way the distribution block reserves isrc."""
+    meta = build_meta({"title": "T", "slot_type": "full"}, {"title": "T"},
+                      date(2026, 8, 27), 1, {})
+    assert "cover" in meta["files"]
+    assert meta["files"]["cover"] is None
+
+    made = tmp_path / "cover.jpg"
+    made.write_bytes(b"\xff\xd8")
+    meta = build_meta({"title": "T", "slot_type": "full"}, {"title": "T"},
+                      date(2026, 8, 27), 1, {}, cover=made)
+    assert meta["files"]["cover"] == "cover.jpg"

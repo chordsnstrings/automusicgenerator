@@ -1,16 +1,16 @@
 # The Daily Five
 
-An unattended pipeline that produces **five finished songs every day** — three
-full-length, two short-form — as WAV, MP3, cover art and timestamped lyrics,
-into a dated folder on DigitalOcean Spaces.
+An unattended pipeline that produces **five finished songs every day** — all
+full-length — as WAV, MP3 and timestamped lyrics, into a dated folder on
+DigitalOcean Spaces.
 
 Eleven agents across five phases: **sense → write → render → judge → ship**,
 with a feedback loop that makes tomorrow's run different from today's.
 
 ```
 7 briefs  ->  14 clips  ->  QC gate  ->  producer  ->  5 shipped
-4 full                      ~11 pass                   3 full + 2 short
-3 short                      ~3 cut                    6 held as reference
+all full-length             ~11 pass                   6 held as reference
+                             ~3 cut
 ```
 
 **Status: v0.3 — implemented, not yet connected.** 93 tests pass. Nothing has
@@ -175,7 +175,7 @@ shipped. Until then the system is grading its own homework, and it says so.
 |---|---|
 | Music | [sunoapi.org](https://docs.sunoapi.org/) — the only irreplaceable dependency |
 | Reasoning roles | any brain — MiniMax, Claude, or an OpenAI-compatible endpoint |
-| Cover art | BytePlus ModelArk — Seedream, 3000×3000 (no text models there) |
+| Cover art | BytePlus ModelArk — Seedream, 3000×3000. **Unconfigured:** with no `ARK_API_KEY` set, songs ship without artwork and the Agents page says so |
 | Audio QC + mastering | ffmpeg only — `ebur128`, `astats`, `silencedetect`. No LLM. |
 | Storage | DigitalOcean Spaces (S3-compatible) |
 | State | Postgres (SQLite works for day one) |

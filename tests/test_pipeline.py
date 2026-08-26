@@ -96,18 +96,18 @@ def test_brief_dict_round_trips_the_fields_agents_need(run_id, brief_factory):
 
 
 def test_a_lane_that_cannot_be_filled_is_recorded_not_silent(run_id, brief_factory):
-    """Shipping four against a contract of five must not read as a clean day."""
+    """Shipping one against a contract of five must not read as a clean day."""
     from dailyfive.config import settings
     from dailyfive.models import Clip, Job, JobState, SlotType
 
-    bid = brief_factory(slot="short")
+    bid = brief_factory(slot="full")
     with session_scope() as s:
         s.get(Brief, bid).dropped_reason = "clearance: drug trafficking narrative"
         j = Job(run_id=run_id, brief_id=bid, idempotency_key="k9",
                 state=JobState.MIRRORED, payload={})
         s.add(j); s.flush()
         s.add(Clip(run_id=run_id, job_id=j.id, brief_id=bid, audio_id="x",
-                   slot_type=SlotType.SHORT, qc_verdict="fail",
+                   slot_type=SlotType.FULL, qc_verdict="fail",
                    qc_reason="38% of the track is silence"))
 
     pl._record_shortfall(run_id, [{"clip_id": 1, "slot_type": "full"}], settings())
@@ -115,7 +115,7 @@ def test_a_lane_that_cannot_be_filled_is_recorded_not_silent(run_id, brief_facto
     with session_scope() as s:
         sf = (s.get(Run, run_id).notes or {}).get("shortfall")
     assert sf, "an unfilled lane must be recorded on the run"
-    assert sf["gaps"]["short"] == settings().short_slots
+    assert sf["gaps"]["full"] == settings().full_slots - 1
     joined = " ".join(sf["causes"])
     assert "drug trafficking" in joined, "the cause must name the dropped brief"
     assert "cut by QC" in joined

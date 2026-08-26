@@ -70,6 +70,34 @@ def rate(clip_id: int, rating: int, note: str | None = None) -> None:
     log.info("clip %d rated %d/10", clip_id, rating)
 
 
+def unrate(clip_id: int) -> bool:
+    """Take back a rating without taking back the note that came with it.
+
+    The row survives and only ``rating`` and ``rated_at`` are cleared. Deleting
+    it would be indistinguishable to every reader — all five filter on rating
+    IS NOT NULL — but ``Outcome`` also holds the note you typed, and ``plays``
+    and ``saves``, the slots reserved for what reality adds later. The stated
+    mistake is a mis-tap on a 1-10 widget; the prose is not part of it.
+
+    Returns True when a rating was actually cleared, so a caller can say
+    "cleared" rather than "was already unrated" without a second query. A
+    missing row or an already-null rating is a no-op and not an error, because
+    a double-tap on a clear control must not fail.
+
+    ``rating = 0`` is deliberately not overloaded as "clear": both write paths
+    reject it as out of range, and making it mean something would turn a
+    documented rejection into a lie.
+    """
+    with session_scope() as s:
+        row = s.execute(select(Outcome).where(Outcome.clip_id == clip_id)).scalar_one_or_none()
+        if row is None or row.rating is None:
+            return False
+        row.rating = None
+        row.rated_at = None
+    log.info("clip %d rating cleared", clip_id)
+    return True
+
+
 def learning_status() -> dict:
     """Which signal the loop is actually optimising against, stated plainly."""
     with session_scope() as s:

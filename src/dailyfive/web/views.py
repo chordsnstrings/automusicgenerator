@@ -33,7 +33,7 @@ ROSTER = [
      "making music for a mood that peaked three weeks ago"),
     ("Music Director", "director", "owns the Style Codex; themes become checkable spec",
      "prompts made of adjectives instead of specifications"),
-    ("A&R", "anr", "seven typed briefs, personas assigned, diversity enforced",
+    ("A&R", "anr", "one brief per spec, personas assigned, diversity enforced",
      "five songs turning out to be the same song"),
     ("Lyricist", "lyricist", "two drafts per brief, then a forced choice",
      "generic AI lyric mush"),
@@ -60,6 +60,13 @@ ROSTER = [
 # uploaded under its own name (pipeline.py), source.wav deliberately excluded.
 FILE_LABELS = [("master.mp3", "MP3"), ("master.wav", "WAV"), ("cover.jpg", "Cover"),
                ("lyrics.txt", "Lyrics"), ("lyrics.lrc", "LRC"), ("meta.json", "Meta")]
+
+# On a same-origin link the download attribute forces a save whatever the
+# Content-Type says, so it is the attribute and not the content type that decides
+# what a click does. Audio is worth saving — nobody wants a browser to navigate
+# to twelve megabytes of MP3 — while the three text artifacts are things you want
+# to read, and now can, since they are served as types a browser renders inline.
+DOWNLOADABLE = {"master.mp3", "master.wav", "cover.jpg"}
 
 # The names the ship loop writes for every clip it delivers. Cover art is
 # skippable and can fail, so it is the one basename nothing may assume.
@@ -197,7 +204,8 @@ def _player(files: dict[str, str], absent: str, *, preload: str) -> str:
 
 
 def _links(files: dict[str, str], absent: str) -> str:
-    parts = [f'<a href="{esc(href)}" download>{label}</a>'
+    parts = [f'<a href="{esc(href)}"{" download" if name in DOWNLOADABLE else ""}>'
+             f'{label}</a>'
              for name, label in FILE_LABELS if (href := files.get(name))]
     if not parts:
         # A shipped Clip outliving its bytes is normal, not an error: the purge
@@ -217,11 +225,18 @@ def _rate(clip_id: int, rating: int | None, back: str) -> str:
         f'aria-pressed="{"true" if rating == n else "false"}" '
         f'aria-label="Rate {n} out of 10">{n}</button>' for n in range(1, 11))
     done = f"rated {int(rating)}/10" if rating else ""
+    # A second submit button in the same form, because a form cannot issue
+    # DELETE and the no-JavaScript path has to keep working. Rendered only where
+    # there is something to clear — offering to undo an unrated song is an
+    # invitation to wonder what it would do.
+    clear = ('<button type="submit" name="clear" value="1" class="clear">clear</button>'
+             if rating is not None else "")
     return (f'<form class="rate" method="post" action="/console/rate" '
             f'data-rate="{int(clip_id)}">'
             f'<input type="hidden" name="clip_id" value="{int(clip_id)}">'
             f'<input type="hidden" name="back" value="{esc(back)}">'
-            f'{buttons}<span class="done" role="status">{esc(done)}</span></form>')
+            f'{buttons}{clear}'
+            f'<span class="done" role="status">{esc(done)}</span></form>')
 
 
 def _song_meta(c: Clip, persona: str | None) -> str:
@@ -252,6 +267,25 @@ def _delivered_link(href: str | None) -> str:
 
 
 # ── overview ─────────────────────────────────────────────────────────────────
+def _shape_line(cfg) -> str:
+    """The day's shape, read from the settings that produce it.
+
+    This sentence is why the console went on announcing a split of full-length and
+    short-form after the slot counts had stopped producing one: it was half prose,
+    and prose does not change when a count does. Every number here is read, and a
+    lane with no slots is not named at all — "0 short-form" is a category the
+    console would be inventing.
+    """
+    lanes = [(n, label) for n, label in ((cfg.full_slots, "full-length"),
+                                         (cfg.short_slots, "short-form")) if n]
+    head = f"{cfg.total_slots} finished songs a day, unattended"
+    cands = cfg.total_briefs * 2
+    if len(lanes) == 1:
+        return f"{head}, all {lanes[0][1]}, chosen from {cands} candidates."
+    shape = " and ".join(f"{n} {label}" for n, label in lanes) or "no slots configured"
+    return f"{head}. {shape}, chosen from {cands} candidates."
+
+
 def overview() -> str:
     st = learning_status()
     cfg = settings()
@@ -265,9 +299,7 @@ def overview() -> str:
 
     body = [
         "<h1>Overview</h1>",
-        f'<p class="sub">Five finished songs a day, unattended. '
-        f'{esc(cfg.full_slots)} full-length and {esc(cfg.short_slots)} short-form, '
-        f'chosen from {esc(cfg.total_briefs * 2)} candidates.</p>',
+        f'<p class="sub">{esc(_shape_line(cfg))}</p>',
         stats(("runs", st["runs"]), ("clips", st["clips"]), ("shipped", st["shipped"]),
               ("rated", st["rated"]), ("credits", spent or "—")),
         f'<div class="note"><span>Learning signal</span>{esc(st["signal"])}</div>',
@@ -353,6 +385,20 @@ def _brain_table() -> str:
             (pill(f'{st["failures"]} failed', "bad") if st.get("failures")
              else '<span class="mini">—</span>'),
         ])
+    # Appended rather than folded into the roster loop, which is LLM brains
+    # only. Cover art is an image model and it is the one integration whose
+    # absence a person currently learns about by reading a log — this is the
+    # page where an operator reads configuration, so it belongs here rather
+    # than in five ERROR lines a day.
+    rows.append([
+        "<b>cover art</b>",
+        '<span class="mini">modelark</span>',
+        "seedream",
+        pill("ready", "ok") if cfg.ark_api_key else pill("no key", "bad"),
+        '<span class="mini">—</span>',
+        '<span class="mini">—</span>',
+        '<span class="mini">—</span>',
+    ])
     return table(["Role", "Provider", "Model", "Key", "Calls 30d", "Time", "Failures"],
                  rows, num_cols={4})
 
@@ -628,6 +674,21 @@ def agents_page() -> str:
                      f'<span class="mini">{esc(does)}</span>', activity, fails,
                      f'<span class="mini">{esc(prevents)}</span>'])
 
+    # Appended after the roster loop rather than folded into ROSTER, which is
+    # the eleven agents. Cover art is an image model, not one of them — but it
+    # is the one integration whose absence a person could previously only learn
+    # by reading five ERROR lines a day, and this is the page an operator opens
+    # to find out what is wired up.
+    rows.append([
+        "<b>Cover art</b>",
+        '<span class="mini">modelark</span><br>seedream',
+        '<span class="mini">the 3000x3000 tile every distributor asks for</span>',
+        ('<span class="mini">not configured</span>' if not settings().ark_api_key
+         else '<span class="mini">—</span>'),
+        (pill("no key", "bad") if not settings().ark_api_key else pill("ready", "ok")),
+        '<span class="mini">nothing — every song ships without artwork</span>',
+    ])
+
     no_brain = sum(1 for _, role, _, _ in ROSTER if role is None)
     recent = ledger.recent(60)
     recent_rows = [[
@@ -777,7 +838,7 @@ def files_page() -> str:
         f'<pre>spaces://{esc(prefix)}/YYYY-MM-DD/\n'
         f'├─ manifest.json\n├─ index.html          '
         f'<i>the rating page</i>\n'
-        f'├─ 01_slug/  master.wav · master.mp3 · cover.jpg · lyrics.txt · '
+        f'├─ 01_slug/  master.wav · master.mp3 · lyrics.txt · '
         f'lyrics.lrc · meta.json\n└─ _rejected/rejects.json</pre>',
         *(blocks or ['<div class="empty">nothing delivered yet</div>']),
     ]), "/files")

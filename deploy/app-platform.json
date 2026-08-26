@@ -55,22 +55,22 @@
         },
         {
           "key": "FULL_BRIEFS",
-          "value": "4",
+          "value": "7",
           "scope": "RUN_AND_BUILD_TIME"
         },
         {
           "key": "FULL_SLOTS",
-          "value": "3",
+          "value": "5",
           "scope": "RUN_AND_BUILD_TIME"
         },
         {
           "key": "SHORT_BRIEFS",
-          "value": "3",
+          "value": "0",
           "scope": "RUN_AND_BUILD_TIME"
         },
         {
           "key": "SHORT_SLOTS",
-          "value": "2",
+          "value": "0",
           "scope": "RUN_AND_BUILD_TIME"
         },
         {
@@ -180,22 +180,22 @@
         },
         {
           "key": "FULL_BRIEFS",
-          "value": "4",
+          "value": "7",
           "scope": "RUN_AND_BUILD_TIME"
         },
         {
           "key": "FULL_SLOTS",
-          "value": "3",
+          "value": "5",
           "scope": "RUN_AND_BUILD_TIME"
         },
         {
           "key": "SHORT_BRIEFS",
-          "value": "3",
+          "value": "0",
           "scope": "RUN_AND_BUILD_TIME"
         },
         {
           "key": "SHORT_SLOTS",
-          "value": "2",
+          "value": "0",
           "scope": "RUN_AND_BUILD_TIME"
         },
         {

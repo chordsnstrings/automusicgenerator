@@ -154,3 +154,75 @@ def test_serving_a_slice_does_not_materialise_the_column(client, store):
         tracemalloc.stop()
     assert r.status_code == 206 and len(r.content) == 1
     assert peak < 8 << 20, f"peaked at {peak / 1e6:.1f} MB serving one byte"
+
+
+def test_head_answers_with_the_length_and_no_body(client, key):
+    """The probe every link-checker and most media clients send first.
+
+    FastAPI's APIRoute, unlike Starlette's Route, does not fold HEAD in beside
+    GET, so this route answered 405 to the one request a proxy makes before it
+    streams anything.
+    """
+    r = client.head(f"/files/{key}")
+    assert r.status_code == 200
+    assert r.headers["content-length"] == str(len(BODY))
+    assert r.headers["content-type"] == "audio/mpeg"
+    assert r.headers["accept-ranges"] == "bytes"
+    assert r.content == b""
+
+
+def test_head_ignores_range_and_reports_the_whole_representation(client, key):
+    """RFC 9110 §14.2 defines range handling for GET only, so a ranged HEAD is
+    still asking how big the file is. Answering 206 with a slice length would
+    misstate it."""
+    r = client.head(f"/files/{key}", headers={"Range": "bytes=0-99"})
+    assert r.status_code == 200
+    assert r.headers["content-length"] == str(len(BODY))
+    assert "content-range" not in r.headers
+
+
+def test_head_of_a_missing_key_is_a_404(client, store):
+    assert client.head("/files/songs/2026-08-27/nope/master.mp3").status_code == 404
+
+
+def test_a_conditional_head_still_takes_the_304(client, key):
+    """The short-circuit sits after the validator check, so a HEAD that already
+    holds the bytes gets the same free answer a GET does."""
+    etag = client.head(f"/files/{key}").headers["etag"]
+    assert client.head(f"/files/{key}", headers={"If-None-Match": etag}).status_code == 304
+
+
+def test_head_does_not_read_the_bytes_it_reports_the_length_of(client, store, monkeypatch):
+    """The only test that fails under the obvious fix, and so the only thing
+    guarding it.
+
+    Adding HEAD to the route's methods and letting the request fall through to
+    the StreamingResponse passes every assertion above: Starlette runs the
+    generator to exhaustion and uvicorn discards the chunks a layer later, so
+    status and Content-Length look identical either way while 32 MB moves
+    through a 512 MB container per probe. Counting the generator is what makes
+    that difference visible, and the peak ceiling is borrowed from
+    test_serving_a_slice_does_not_materialise_the_column for the same reason.
+    """
+    from dailyfive.web import app as appmod
+
+    k = _seed(store, store.key_for("2026-08-27", "01_slow-burn", "master.wav"),
+              b"\0" * (32 << 20), "audio/wav")
+
+    calls: list[tuple] = []
+    real = appmod._chunks
+    monkeypatch.setattr(appmod, "_chunks",
+                        lambda *a, **kw: (calls.append(a), real(*a, **kw))[1])
+
+    tracemalloc.start()
+    try:
+        r = client.head(f"/files/{k}")
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+    assert r.status_code == 200
+    assert r.headers["content-length"] == str(32 << 20)
+    assert r.content == b""
+    assert calls == [], "HEAD streamed the file it was only asked the size of"
+    assert peak < 8 << 20, f"peaked at {peak / 1e6:.1f} MB answering a HEAD"

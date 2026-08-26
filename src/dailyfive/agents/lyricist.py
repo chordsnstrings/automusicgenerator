@@ -49,7 +49,9 @@ later, so it carries the hook, not a new idea every time.
 the rain, shattered glass, burning bridges, city lights, falling stars, chasing \
 shadows. If one of these is the first thing you reach for, reach again.
 - Never quote or paraphrase an existing song's lyrics. Not a line, not a title.
-- Do not name real people, brands or places you would need permission to use.
+- Do not name real people, brands or places you would need permission to use."""
+
+SHORT_RULE = """
 
 For a SHORT cut, the hook comes first and the whole thing is under 20 lines. It \
 has to loop, so the last line should sit naturally before the first."""
@@ -61,10 +63,13 @@ def run(brief: dict, *, client=None) -> dict:
     title = brief.get("title", "?")
 
     prompt = _brief_prompt(brief)
+    # Per brief, not per config: the rule is about the cut in hand, and a
+    # historical short brief re-run must still get it.
+    system = SYSTEM + (SHORT_RULE if slot == "short" else "")
     drafts: list[str] = []
     for n in (1, 2):
         try:
-            text = ask("lyricist", SYSTEM, prompt + _variation(n, slot),
+            text = ask("lyricist", system, prompt + _variation(n, slot),
                        max_tokens=2500, temperature=0.95 if n == 1 else 1.05,
                        label=f"draft{n}:{title[:24]}")
             cleaned = _clean(text)
@@ -122,7 +127,7 @@ def _brief_prompt(brief: dict) -> str:
 def _variation(n: int, slot: str) -> str:
     if n == 1:
         return "\n\nWrite the lyric. Return only the lyric with its section tags."
-    length = "under 20 lines" if slot == "short" else "full length"
+    length = "under 20 lines" if slot == "short" else "the same song form and length"
     return ("\n\nWrite a DIFFERENT lyric for the same brief — a different entry point, "
             f"a different central image, a different opening line. {length.capitalize()}. "
             "Return only the lyric with its section tags.")

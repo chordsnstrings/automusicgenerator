@@ -309,6 +309,22 @@ def cmd_rate(args) -> int:
     return 0
 
 
+def cmd_unrate(args) -> int:
+    """Take a rating back. A flat verb, because `rate --clear` would force the
+    rating positional to nargs='?' and invent a `dailyfive rate 1` case argparse
+    cannot refuse cleanly."""
+    init_db()
+    with session_scope() as s:
+        if s.get(Clip, args.clip_id) is None:
+            print(f"no clip {args.clip_id}")
+            return 1
+    cleared = archivist.unrate(args.clip_id)
+    st = archivist.learning_status()
+    print(f"clip {args.clip_id} " + ("rating cleared" if cleared else "was not rated")
+          + f" — {st['signal']}")
+    return 0
+
+
 def cmd_status(args) -> int:
     init_db()
     st = archivist.learning_status()
@@ -353,7 +369,8 @@ def cmd_today(args) -> int:
             print(f"  [{c.id:>4}] {c.title or 'Untitled':<34} "
                   f"{c.slot_type.value:<6} score {c.score_total or 0:.2f}"
                   + (f" · rated {rating}/10" if rating else " · unrated"))
-        print(f"\nRate with:  dailyfive rate <clip_id> <1-10>")
+        print("\nRate with:  dailyfive rate <clip_id> <1-10>"
+              "   ·   undo with:  dailyfive unrate <clip_id>")
     return 0
 
 
@@ -391,6 +408,17 @@ def cmd_backup(args) -> int:
     key = backup.to_storage(keep_local=args.keep)
     print(f"backup stored at {key}" if key else
           "backup written locally; upload failed — see the log")
+    return 0
+
+
+def cmd_retype(args) -> int:
+    """Correct content types on rows written before the derivation was fixed."""
+    from .storage import retype_stored_files
+    init_db()
+    result = retype_stored_files(dry_run=args.dry_run)
+    print(json.dumps(result, indent=2, default=str))
+    if args.dry_run and result["fixed"]:
+        print(f"\n  dry run — {result['fixed']} row(s) would be corrected")
     return 0
 
 
@@ -554,6 +582,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--note")
     s.set_defaults(fn=cmd_rate)
 
+    s = sub.add_parser("unrate", help="take a rating back, keeping its note")
+    s.add_argument("clip_id", type=int)
+    s.set_defaults(fn=cmd_unrate)
+
     s = sub.add_parser("today", help="what shipped, with clip ids")
     s.add_argument("--date")
     s.set_defaults(fn=cmd_today)
@@ -571,6 +603,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--dry-run", action="store_true")
     s.add_argument("--usage", action="store_true", help="show what the store holds")
     s.set_defaults(fn=cmd_purge)
+
+    s = sub.add_parser("retype", help="correct stored content types in place")
+    s.add_argument("--dry-run", action="store_true")
+    s.set_defaults(fn=cmd_retype)
 
     s = sub.add_parser("backup", help="dump the database and store it")
     s.add_argument("--local-only", action="store_true")

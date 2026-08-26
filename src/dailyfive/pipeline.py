@@ -211,7 +211,7 @@ def _phase_brief(run_id: int, cfg) -> RunPhase:
                                   "persona_model": b.get("persona_model")},
             ))
         s.get(Run, run_id).codex_version = cx.version
-    log.info("brief: %d full, %d short", counters["full"], counters["short"])
+    log.info("brief: %s", ", ".join(f"{n} {name}" for name, n in counters.items() if n))
     return _advance(run_id, RunPhase.BRIEFED)
 
 
@@ -435,6 +435,22 @@ def _phase_ship(run_id: int, cfg, *, skip_art: bool = False) -> RunPhase:
     manifest: list[dict] = []
     page_songs: list[dict] = []
 
+    # Decided once, above the loop, because it is one fact about the deployment
+    # rather than five independent failures. WARNING and not ERROR: an
+    # integration nobody configured is a settled state, and five ERRORs a day
+    # for it is 1,825 a year that mean nothing and train an operator to ignore
+    # the level. The note goes on the run beside "shortfall" so the console can
+    # say so without anyone reading a log.
+    art_ok = bool(cfg.ark_api_key) and not skip_art
+    if not art_ok:
+        reason = "--skip-art" if skip_art else "ARK_API_KEY unset"
+        log.warning("cover art not configured — %s; %d songs shipped without artwork",
+                    reason, len(rows))
+        with session_scope() as s:
+            run = s.get(Run, run_id)
+            run.notes = {**(run.notes or {}),
+                         "art": {"configured": False, "reason": reason}}
+
     for slot_index, (clip_id, audio_id, local, slot_type, _rank, brief_id,
                      title, qc) in enumerate(rows, start=1):
         with session_scope() as s:
@@ -483,9 +499,7 @@ def _phase_ship(run_id: int, cfg, *, skip_art: bool = False) -> RunPhase:
         except Exception as exc:
             log.warning("could not re-measure the delivered master: %s", exc)
 
-        cover = None
-        if not skip_art:
-            cover = cover_art(brief, folder / "cover.jpg")
+        cover = cover_art(brief, folder / "cover.jpg") if art_ok else None
 
         lyrics = brief.get("lyrics") or ""
         (folder / "lyrics.txt").write_text(lyrics, encoding="utf-8")
@@ -502,7 +516,7 @@ def _phase_ship(run_id: int, cfg, *, skip_art: bool = False) -> RunPhase:
                 comment=f"run {run_date} · clip {clip_id} · not loudness normalised (WAV)")
 
         meta = build_meta({**clip_dict, "task_id": task_id}, brief, run_date,
-                          slot_index, qc)
+                          slot_index, qc, cover=cover)
         (folder / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
         keys: dict[str, str] = {}

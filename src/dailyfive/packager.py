@@ -24,7 +24,6 @@ from datetime import date
 from pathlib import Path
 
 from .config import settings
-from .errors import ProviderError
 from .http import download
 from .providers.modelark import ModelArkClient
 from .qc import QCMetrics, have_ffmpeg, trim_points
@@ -185,15 +184,28 @@ def _stamp(seconds: float) -> str:
 
 def cover_art(brief: dict, dest: Path, *, client: ModelArkClient | None = None) -> Path | None:
     """3000x3000 — the size every DSP accepts, so it never needs regenerating."""
+    if client is None and not settings().ark_api_key:
+        # ModelArkClient's constructor raises before it opens a socket when the
+        # key is unset, so without this the code asks for a client it already
+        # knows cannot exist and then logs its own objection at ERROR, five
+        # times a day forever. An unconfigured optional integration is a
+        # settled fact about the deployment, not an event worth alerting on;
+        # the caller says so once per run instead. The check is skipped when a
+        # client was handed in, because an injected client is the caller
+        # asserting it has one.
+        return None
     try:
         client = client or ModelArkClient()
         prompt = _cover_prompt(brief)
         url = client.cover(prompt)
         download(url, dest, provider="modelark-image")
         return dest
-    except (ProviderError, Exception) as exc:
-        # Art is the one deliverable worth shipping without. A missing cover is
-        # a gap in a folder; a failed run is a missing day.
+    except Exception as exc:
+        # Still ERROR, and deliberately: a key that is configured and stops
+        # working is a real event. Art is the one deliverable worth shipping
+        # without — a missing cover is a gap in a folder, a failed run is a
+        # missing day. ProviderError subclasses DailyFiveError subclasses
+        # Exception, so the tuple this replaces only ever meant Exception.
         log.error("cover art failed for %r: %s", brief.get("title"), exc)
         return None
 
@@ -238,8 +250,15 @@ def tag_mp3(path: Path, *, title: str, artist: str, album: str, year: str,
 
 
 def build_meta(clip: dict, brief: dict, run_date: date, slot_index: int,
-               qc: dict) -> dict:
-    """The per-song meta.json, distribution block included and empty."""
+               qc: dict, *, cover: Path | None = None) -> dict:
+    """The per-song meta.json, distribution block included and empty.
+
+    ``cover`` is the file that was actually produced, or None. A manifest that
+    names cover.jpg unconditionally is a machine-readable false statement three
+    lines above a block that goes to the trouble of reserving fields it has no
+    authority to fill. The key stays, with nothing in it, for the same reason
+    isrc does.
+    """
     return {
         "title": clip.get("title") or brief.get("title"),
         "slug": f"{slot_index:02d}_{slugify(clip.get('title') or brief.get('title', ''))}",
@@ -291,7 +310,8 @@ def build_meta(clip: dict, brief: dict, run_date: date, slot_index: int,
             "why": clip.get("why"),
         },
         "files": {
-            "wav": "master.wav", "mp3": "master.mp3", "cover": "cover.jpg",
+            "wav": "master.wav", "mp3": "master.mp3",
+            "cover": cover.name if cover else None,
             "lyrics_txt": "lyrics.txt", "lyrics_lrc": "lyrics.lrc",
         },
         # Reserved, deliberately empty. See the module docstring.

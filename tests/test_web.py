@@ -165,3 +165,97 @@ def test_rating_scale_is_a_grid_not_a_wrapping_row():
                     api_base="https://songs.test")
     assert "grid-template-columns:repeat(10,1fr)" in html
     assert "grid-template-columns:repeat(5,1fr)" in html
+
+
+def test_the_health_endpoints_answer_head(client):
+    """An uptime monitor that probes with HEAD got a 405 and called it down."""
+    assert client.head("/healthz").status_code == 200
+    assert client.head("/health").status_code == 200
+
+
+def test_a_webhook_refuses_head(client):
+    """HEAD is folded in per route rather than across the router precisely so
+    that the write paths keep refusing it."""
+    assert client.head("/webhooks/testsecret/generate").status_code == 405
+
+
+@pytest.fixture
+def rated_clip(run_id, brief_factory):
+    """A shipped clip carrying a rating — the state a mis-tap leaves behind."""
+    from dailyfive.archivist import rate
+    from dailyfive.db import session_scope
+    from dailyfive.models import Clip, Job, JobState, SlotType
+
+    bid = brief_factory()
+    with session_scope() as s:
+        job = Job(run_id=run_id, brief_id=bid, idempotency_key="k",
+                  state=JobState.SUCCESS, payload={})
+        s.add(job); s.flush()
+        clip = Clip(run_id=run_id, job_id=job.id, brief_id=bid, audio_id="a",
+                    variant=0, slot_type=SlotType.FULL, title="T", shipped=True)
+        s.add(clip); s.flush()
+        clip_id = clip.id
+    rate(clip_id, 7, note="written while verifying the endpoint")
+    return clip_id
+
+
+def test_a_rating_can_be_taken_back(client, rated_clip):
+    """The gap: a mis-tap on a 1-10 widget was permanent, and it steers the
+    Archivist's learning signal and the weekly retro until it is removed."""
+    clip_id = rated_clip
+    assert client.get(f"/ratings?clip_ids={clip_id}").json()["ratings"] != {}
+
+    r = client.delete(f"/ratings/{clip_id}")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "clip_id": clip_id, "cleared": True}
+    assert client.get(f"/ratings?clip_ids={clip_id}").json()["ratings"] == {}
+
+
+def test_clearing_a_rating_twice_is_not_an_error(client, rated_clip):
+    """A double-tap on a clear control must not fail; the second call reports
+    honestly that there was nothing left to clear."""
+    clip_id = rated_clip
+    assert client.delete(f"/ratings/{clip_id}").json()["cleared"] is True
+    second = client.delete(f"/ratings/{clip_id}")
+    assert second.status_code == 200
+    assert second.json()["cleared"] is False
+
+
+def test_clearing_keeps_the_note_the_rating_carried(client, rated_clip):
+    """The endpoint is deliberately less destructive than the POST it undoes."""
+    from dailyfive.db import session_scope
+    from dailyfive.models import Outcome
+
+    clip_id = rated_clip
+    client.delete(f"/ratings/{clip_id}")
+    with session_scope() as s:
+        row = s.query(Outcome).filter(Outcome.clip_id == clip_id).one()
+        assert row.rating is None
+        assert row.note == "written while verifying the endpoint"
+
+
+def test_clearing_a_rating_on_an_unknown_clip_is_a_404(client):
+    assert client.delete("/ratings/424242").status_code == 404
+
+
+def test_clearing_is_behind_the_same_rate_limit_as_rating(client, monkeypatch):
+    import dailyfive.web.app as web
+    monkeypatch.setattr(web, "_rate_limited", lambda ip: True)
+    assert client.delete("/ratings/1").status_code == 429
+
+
+def test_zero_is_still_not_a_way_to_clear_a_rating(client, rated_clip):
+    """Overloading 0 would turn a documented rejection into a lie, which is why
+    clearing got its own verb."""
+    clip_id = rated_clip
+    assert client.post("/ratings", json={"clip_id": clip_id, "rating": 0}).status_code == 400
+
+
+def test_the_day_page_clears_a_rating_the_server_no_longer_has():
+    """localStorage only knows what this browser did, so a rating cleared on the
+    console would otherwise read as rated forever on the phone that set it."""
+    from datetime import date
+    html = day_page(date(2026, 8, 27),
+                    [{"clip_id": 1, "title": "S", "mp3_url": "u"}],
+                    api_base="https://songs.test")
+    assert "removeItem('rating:'" in html
