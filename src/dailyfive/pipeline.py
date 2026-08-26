@@ -18,11 +18,12 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from . import archivist, codex
+from . import archivist, codex, ledger
 from .agents import anr, clearance, compiler, director, lyricist, producer, scout
 from .config import settings
 from .conductor import Conductor
 from .db import init_db, session_scope
+from . import llm
 from .errors import BudgetExceeded, ConfigError, ProviderError
 from .models import (Brief, Clip, Decision, Job, JobState, Run, RunPhase,
                      Signal, SlotType, utcnow)
@@ -46,11 +47,24 @@ def preflight(*, require_ffmpeg: bool = True) -> list[str]:
     problems: list[str] = []
 
     try:
-        cfg.require("suno_api_key", "anthropic_api_key", "minimax_api_key",
-                    "spaces_key", "spaces_secret", "spaces_bucket",
+        cfg.require("suno_api_key", "spaces_key", "spaces_secret", "spaces_bucket",
                     "spaces_endpoint", "public_base_url")
     except ConfigError as exc:
         problems.append(str(exc))
+
+    # Only demand keys for the brains this roster actually uses. Running the
+    # whole roster on MiniMax should not require an Anthropic key.
+    needed = {"anthropic": ("anthropic_api_key", "ANTHROPIC_API_KEY"),
+              "minimax": ("minimax_api_key", "MINIMAX_API_KEY"),
+              "openai-compatible": ("llm_api_key", "LLM_API_KEY")}
+    for provider in sorted(cfg.brains_in_use()):
+        attr_env = needed.get(provider)
+        if attr_env is None:
+            problems.append(f"unknown LLM provider configured: {provider!r}")
+        elif not getattr(cfg, attr_env[0], ""):
+            roles = [r for r, b in llm.roster().items() if b.provider == provider]
+            problems.append(f"{attr_env[1]} is not set — needed by "
+                            f"{', '.join(roles) or provider}")
     try:
         cfg.validate_shape()
     except ConfigError as exc:
@@ -87,7 +101,11 @@ def run_daily(run_date: date | None = None, *, resume: bool = True,
     cfg.validate_shape()
 
     run_id, phase = _open_run(run_date, resume=resume)
+    # Every brain call from here on is attributed to this run.
+    ledger.bind_run(run_id)
     log.info("run %d for %s starting at phase %s", run_id, run_date, phase.value)
+    for role, brain in llm.roster().items():
+        log.info("  brain %-10s %s", role, brain)
 
     try:
         if _before(phase, RunPhase.SENSED):
@@ -121,6 +139,8 @@ def run_daily(run_date: date | None = None, *, resume: bool = True,
 
     summary["run_id"] = run_id
     summary["learning"] = archivist.learning_status()["signal"]
+    summary["brains"] = {r: str(b) for r, b in llm.roster().items()}
+    ledger.bind_run(None)
     log.info("run %d complete: %s", run_id, json.dumps(summary, default=str))
     return summary
 

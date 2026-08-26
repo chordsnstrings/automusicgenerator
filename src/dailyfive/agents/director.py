@@ -83,7 +83,8 @@ def run(themes: list[dict], codex: Codex, *, full_n: int, short_n: int,
         "produce the same song are a wasted slot."
     )
 
-    result = ask_json(SYSTEM, user, schema_hint=SCHEMA, max_tokens=6000, temperature=1.0)
+    result = ask_json("director", SYSTEM, user, schema_hint=SCHEMA,
+                      max_tokens=6000, temperature=1.0, label="specs")
     specs = result.get("specs") or []
 
     out: list[dict] = []

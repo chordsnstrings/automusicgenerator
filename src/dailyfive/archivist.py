@@ -220,13 +220,14 @@ def weekly_retro(*, days: int = 14, dry_run: bool = False) -> dict:
 
     try:
         result = ask_json(
-            RETRO_SYSTEM,
+            "retro", RETRO_SYSTEM,
             f"Codex v{cx.version}:\n{cx.brief_context()}\n\n"
             f"Aggregates over the last {days} days:\n"
             f"{json.dumps(stats, ensure_ascii=False)}\n\n"
             f"Learning signal in use: {status['signal']}\n"
             f"({status['rated']} of {status['shipped']} shipped songs rated)",
-            schema_hint=RETRO_SCHEMA, max_tokens=3000, temperature=0.4)
+            schema_hint=RETRO_SCHEMA, max_tokens=3000, temperature=0.4,
+            label="weekly-retro")
     except ProviderError as exc:
         return {"changed": False, "reason": f"retro model call failed: {exc}"}
 

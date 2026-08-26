@@ -58,6 +58,12 @@ class Settings:
     minimax_base_url: str = field(default_factory=lambda: _s("MINIMAX_BASE_URL", "https://api.minimax.io").rstrip("/"))
     minimax_text_model: str = field(default_factory=lambda: _s("MINIMAX_TEXT_MODEL", "MiniMax-M3"))
 
+    # Brain routing — any role can run on any provider.
+    llm_default: str = field(default_factory=lambda: _s("LLM_DEFAULT", "anthropic"))
+    llm_api_key: str = field(default_factory=lambda: _s("LLM_API_KEY"))
+    llm_base_url: str = field(default_factory=lambda: _s("LLM_BASE_URL").rstrip("/"))
+    llm_model: str = field(default_factory=lambda: _s("LLM_MODEL"))
+
     # ModelArk
     ark_api_key: str = field(default_factory=lambda: _s("ARK_API_KEY"))
     ark_base_url: str = field(default_factory=lambda: _s(
@@ -115,6 +121,19 @@ class Settings:
             raise ConfigError("PUBLIC_BASE_URL is required — Suno must be able to reach you")
         secret = self.webhook_secret or "nosecret"
         return f"{self.public_base_url}/webhooks/{secret}/{kind}"
+
+    def role_brain(self, role: str) -> str:
+        """Per-role brain override, e.g. LLM_LYRICIST=minimax:MiniMax-M3."""
+        return _s(f"LLM_{role.upper()}")
+
+    def brains_in_use(self) -> set[str]:
+        """Which providers the configured roster actually needs a key for."""
+        from .llm import ROLES
+        out = set()
+        for role in ROLES:
+            spec = self.role_brain(role) or self.llm_default or "anthropic"
+            out.add(spec.split(":", 1)[0].strip().lower())
+        return out
 
     def require(self, *names: str) -> None:
         """Fail at the top of a run, naming every missing key at once.

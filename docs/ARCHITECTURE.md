@@ -66,15 +66,15 @@ prevents.
 
 | # | Agent | Status | Prevents | LLM |
 |---|---|---|---|---|
-| 01 | **Scout** | re-scoped | Making music for a mood that peaked three weeks ago | Claude |
-| 02 | **Music Director** | re-scoped | Prompts made of adjectives instead of specifications | Claude |
-| 03 | **A&R** | **added** | Five songs that are the same song | Claude |
-| 04 | **Lyricist** | kept | Generic AI lyric mush | MiniMax M3 |
-| 05 | **Clearance** | **added** | `SENSITIVE_WORD_ERROR` burning credits at 2am | rules first, model second |
+| 01 | **Scout** | re-scoped | Making music for a mood that peaked three weeks ago | any brain |
+| 02 | **Music Director** | re-scoped | Prompts made of adjectives instead of specifications | any brain |
+| 03 | **A&R** | **added** | Five songs that are the same song | any brain |
+| 04 | **Lyricist** | kept | Generic AI lyric mush | any brain |
+| 05 | **Clearance** | **added** | `SENSITIVE_WORD_ERROR` burning credits at 2am | rules first, then any |
 | 06 | **Prompt Compiler** | re-scoped | Silent truncation, invalid param combinations | light |
 | 07 | **Conductor** | **added** | One dropped webhook killing the whole day | none |
 | 08 | **QC Engineer** | **added** | Shipping a track that clips or is 40s of silence | none |
-| 09 | **Producer** | kept | Shipping the first five instead of the best five | Claude |
+| 09 | **Producer** | kept | Shipping the first five instead of the best five | any |
 | 10 | **Packager** | **added** | A bucket of untitled WAVs you cannot use | light |
 | 11 | **Archivist** | **added** | Day 30 being exactly as good as day 1 | weekly retro only |
 
@@ -319,9 +319,9 @@ also receives your daily ratings, so there is only one public surface to secure.
 | Provider | Used for | Called by | Notes |
 |---|---|---|---|
 | sunoapi.org | music generation, WAV conversion, aligned lyrics | Conductor, Packager | the only irreplaceable dependency |
-| MiniMax | lyrics (M3); optional second music supplier | Lyricist | music billing needs a pay-as-you-go balance, not just a plan key |
+| MiniMax | any reasoning role; optional second music supplier | 7 roles | verified live on the full roster; music billing needs PAYG, not just a plan key |
 | BytePlus ModelArk | cover art (Seedream); optional video loops (Seedance) | Packager | no text models exposed — art only |
-| Claude | Scout, Director, A&R, Clearance, Producer | 5 agents | the reasoning-heavy roles |
+| Any brain | Scout, Director, A&R, Lyricist, Clearance, Producer, Retro | 7 roles | set by `LLM_DEFAULT`; per-role overrides |
 | ffmpeg | QC measurement, mastering, MP3 encode | QC, Packager | local, free, deterministic |
 | DO Spaces | every artefact, forever | Conductor, Packager | S3-compatible; set a lifecycle rule |
 
@@ -510,6 +510,62 @@ getting it wrong is silent:
   (mood, tempo band, subject) costs nothing.
 - **Idempotency.** The job row is committed *before* the request is sent, so a
   process dying between POST and commit resumes rather than re-buying.
+
+### Brain-agnostic by construction
+
+Every reasoning role names a **role**, not a vendor. `src/dailyfive/llm.py`
+resolves which model answers, from configuration alone:
+
+```
+LLM_DEFAULT=minimax        # the whole roster on MiniMax
+LLM_PRODUCER=anthropic     # one role moved, nothing else touched
+```
+
+Three providers ship: `anthropic`, `minimax`, and `openai-compatible` for
+anything else speaking that dialect (OpenRouter, Together, vLLM, Ollama) via
+`LLM_BASE_URL`. Adding a fourth is a class with one method.
+
+The differences that actually matter between brains live in that one module
+rather than scattered through the agents:
+
+- **Native JSON mode.** OpenAI-compatible surfaces accept
+  `response_format={"type":"json_object"}`, which is the single biggest
+  structured-output reliability win on smaller models — worth more than any
+  amount of prompt scolding. Anthropic has no equivalent, so there the schema
+  goes in the prompt. Same call site either way.
+- **Reasoning tokens.** MiniMax's M-series reasons by default and can wrap the
+  answer in `<think>` blocks. Disabled explicitly, stripped defensively.
+- **Failure vocabulary.** MiniMax answers HTTP 200 with an error envelope;
+  Anthropic raises. Both become a `ProviderError` with an honest `retryable`.
+
+Two design choices already in the pipeline turn out to matter *more* on cheaper
+brains, not less: two lyric drafts with a forced choice, and the JSON repair
+turn that feeds the actual parse error back. Both were added for quality; both
+are what make the move off a frontier model survivable.
+
+**Verified live.** The full roster ran on `MiniMax-M3` against live trend feeds:
+11 brain calls, zero failures, 86 seconds. The Scout produced themes with honest
+confidence scores from real Google Trends data, the Director produced checkable
+specs (96 BPM, D minor, hook at 0:00), the Lyricist produced concrete lines
+rather than stock imagery, and the Producer scored and rejected with reasoning.
+
+### The console
+
+An unattended system you cannot see is one you have to trust. Five pages, served
+by the same process that receives Suno's callbacks:
+
+| Page | Shows |
+|---|---|
+| `/` | runs, learning signal, which brain backs which role and whether its key is present |
+| `/runs/<date>` | the phase timeline, the themes the Scout found and from which feed, every brief with its clearance verdict, every job with callbacks-vs-polls, **all 14 candidates including the nine that did not ship and exactly why**, and every brain call with timing |
+| `/agents` | all eleven roles, their brains, 30-day activity and failures — including the four with no brain at all |
+| `/codex` | the Style Codex, persona cast and registration state, what it has learned, full version history |
+| `/files` | everything delivered, by day |
+
+Every brain call is recorded in an `agent_calls` row — role, provider, model,
+duration, characters in and out, and the error if it failed. That table is what
+makes "eleven agents" checkable rather than a claim, and it is what makes a
+change in output quality traceable to a change in brain.
 
 ### What is not implemented
 

@@ -91,7 +91,8 @@ def run(region: str = "US", *, want: int = 10,
         f"{json.dumps(payload, ensure_ascii=False)[:60000]}"
     )
 
-    result = ask_json(SYSTEM, user, schema_hint=SCHEMA, max_tokens=6000, temperature=1.0)
+    result = ask_json("scout", SYSTEM, user, schema_hint=SCHEMA,
+                      max_tokens=6000, temperature=1.0, label="signal-sheet")
     themes = result.get("themes") or []
 
     cleaned = []

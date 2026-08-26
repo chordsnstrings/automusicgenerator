@@ -124,7 +124,8 @@ def _score_axis(axis: str, system: str, candidates: list[dict],
         + (f"Today's signal sheet:\n{json.dumps(signals.get('themes', [])[:10], ensure_ascii=False)}"
            if axis == "trend" else "")
     )
-    result = ask_json(system, user, schema_hint=SCHEMA, max_tokens=3000, temperature=0.4)
+    result = ask_json("producer", system, user, schema_hint=SCHEMA,
+                      max_tokens=3000, temperature=0.4, label=f"score:{axis}")
     out: dict[int, tuple[float, str]] = {}
     for row in result.get("scores") or []:
         try:
@@ -176,11 +177,12 @@ def _select(candidates: list[dict], signals: dict, *, full_slots: int,
 
     try:
         result = ask_json(
-            FINAL_SYSTEM,
+            "producer", FINAL_SYSTEM,
             f"Fill {full_slots} FULL slots and {short_slots} SHORT slots.\n\n"
             f"Candidates with scores:\n{json.dumps(summary, ensure_ascii=False)}\n\n"
             f"Today's themes:\n{json.dumps(signals.get('themes', [])[:8], ensure_ascii=False)}",
-            schema_hint=FINAL_SCHEMA, max_tokens=3000, temperature=0.5)
+            schema_hint=FINAL_SCHEMA, max_tokens=3000, temperature=0.5,
+            label="selection")
     except ProviderError as exc:
         log.warning("producer selection failed (%s) — falling back to score order", exc)
         result = {}

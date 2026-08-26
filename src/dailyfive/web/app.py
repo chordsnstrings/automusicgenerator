@@ -210,40 +210,50 @@ def rating_status() -> dict:
     return learning_status()
 
 
+# ── console ──────────────────────────────────────────────────────────────────
+# The day page shows five songs; these show the machine that made them. Kept on
+# the same service because it is the same database and the same one public
+# surface to secure.
+
+@app.get("/runs", response_class=HTMLResponse)
+def console_runs() -> str:
+    from . import views
+    return views.runs_list()
+
+
+@app.get("/runs/{run_date}", response_class=HTMLResponse)
+def console_run(run_date: str) -> str:
+    from datetime import datetime
+    from . import views
+    try:
+        parsed = datetime.strptime(run_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+    body = views.run_detail(parsed)
+    if body is None:
+        raise HTTPException(status_code=404, detail=f"no run for {run_date}")
+    return body
+
+
+@app.get("/agents", response_class=HTMLResponse)
+def console_agents() -> str:
+    from . import views
+    return views.agents_page()
+
+
+@app.get("/codex", response_class=HTMLResponse)
+def console_codex() -> str:
+    from . import views
+    return views.codex_page()
+
+
+@app.get("/files", response_class=HTMLResponse)
+def console_files() -> str:
+    from . import views
+    return views.files_page()
+
+
 @app.get("/", response_class=HTMLResponse)
 def root() -> str:
-    from ..archivist import learning_status
-    st = learning_status()
-    runs = f"{st['runs']} run" + ("" if st["runs"] == 1 else "s")
-    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>The Daily Five — receiver</title><style>
-:root{{--bg:#f2f2ef;--card:#fff;--ink:#16181b;--dim:#666c74;--rule:#dcdcd6;--hot:#b4560b}}
-@media(prefers-color-scheme:dark){{:root{{--bg:#111316;--card:#181b1f;--ink:#e8eaed;
-  --dim:#8b929b;--rule:#2b3037;--hot:#e9a13b}}}}
-body{{margin:0;background:var(--bg);color:var(--ink);padding:3.5rem 1.5rem;
-  font:15px/1.7 ui-monospace,"SF Mono",Menlo,monospace}}
-.w{{max-width:42rem;margin:0 auto}}
-h1{{font-size:1.4rem;letter-spacing:-.02em;margin:0 0 1.5rem}}
-.n{{display:flex;gap:0;border:1px solid var(--rule);border-radius:4px;
-  background:var(--card);margin-bottom:1.5rem;flex-wrap:wrap}}
-.n div{{flex:1 1 5rem;padding:.85rem 1rem;border-right:1px solid var(--rule)}}
-.n div:last-child{{border-right:0}}
-.n b{{display:block;font-size:1.35rem;letter-spacing:-.02em}}
-.n span{{color:var(--dim);font-size:.7rem;letter-spacing:.1em;text-transform:uppercase}}
-.sig{{border-left:2px solid var(--hot);padding:.15rem 0 .15rem 1rem;margin-bottom:1.5rem}}
-.sig span{{color:var(--dim);font-size:.7rem;letter-spacing:.1em;
-  text-transform:uppercase;display:block}}
-code{{color:var(--hot)}} p{{color:var(--dim)}}
-</style></head><body><div class="w">
-<h1>The Daily Five</h1>
-<div class="n">
-  <div><b>{st['runs']}</b><span>runs</span></div>
-  <div><b>{st['clips']}</b><span>clips</span></div>
-  <div><b>{st['shipped']}</b><span>shipped</span></div>
-  <div><b>{st['rated']}</b><span>rated</span></div>
-</div>
-<div class="sig"><span>Learning signal</span>{st['signal']}</div>
-<p>Callback receiver and rating endpoint — {runs} recorded.
-The songs themselves live in Spaces.</p>
-</div></body></html>"""
+    from . import views
+    return views.overview()

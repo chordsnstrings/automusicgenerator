@@ -247,6 +247,55 @@ def _seed_brief(persona: dict) -> dict:
     }
 
 
+def cmd_brains(args) -> int:
+    """Which brain answers for which role, and whether it is reachable."""
+    from . import llm, ledger
+    cfg = settings()
+    roster = llm.roster()
+    summary = ledger.role_summary(30)
+    needed = {"anthropic": "anthropic_api_key", "minimax": "minimax_api_key",
+              "openai-compatible": "llm_api_key"}
+
+    print(f"default: {cfg.llm_default or 'anthropic'}\n")
+    print(f"  {'ROLE':<11} {'BRAIN':<34} {'KEY':<9} {'30d':>6}  NOTE")
+    for role, brain in roster.items():
+        attr = needed.get(brain.provider)
+        if brain.provider == "unconfigured":
+            key = "BAD"
+        elif attr and not getattr(cfg, attr, ""):
+            key = "missing"
+        else:
+            key = "ok"
+        calls = summary.get(role, {}).get("calls", 0)
+        print(f"  {role:<11} {str(brain):<34} {key:<9} {calls:>6}  "
+              f"{llm.ROLE_HINTS.get(role, '')}")
+
+    others = [(n, d) for n, r, d, _ in
+              [("Prompt Compiler", None, "brief -> validated payload", 0),
+               ("Conductor", None, "fires, polls, retries, mirrors", 0),
+               ("QC Engineer", None, "ffmpeg measurement", 0),
+               ("Packager", None, "master, art, tags, delivery", 0)]]
+    print("\n  no brain, on purpose:")
+    for name, does in others:
+        print(f"    {name:<17} {does}")
+
+    if not args.probe:
+        print("\n  --probe sends a few tokens to each distinct brain to check it answers.")
+        return 0
+
+    print("\n  probing…")
+    seen: dict[str, tuple[bool, str]] = {}
+    failed = False
+    for role, brain in roster.items():
+        key = str(brain)
+        if key not in seen:
+            seen[key] = llm.probe(role)
+        ok, detail = seen[key]
+        failed = failed or not ok
+        print(f"    {'OK ' if ok else 'FAIL'} {role:<11} {detail[:90]}")
+    return 1 if failed else 0
+
+
 def cmd_rate(args) -> int:
     init_db()
     with session_scope() as s:
@@ -382,6 +431,11 @@ def build_parser() -> argparse.ArgumentParser:
                    choices=["style_persona", "voice_persona"])
     s.add_argument("-y", "--yes", action="store_true", help="skip the spend prompt")
     s.set_defaults(fn=cmd_personas)
+
+    s = sub.add_parser("brains", help="which brain runs which role")
+    s.add_argument("--probe", action="store_true",
+                   help="send a few tokens to each brain to confirm it answers")
+    s.set_defaults(fn=cmd_brains)
 
     s = sub.add_parser("rate", help="rate a shipped song 1-10")
     s.add_argument("clip_id", type=int)

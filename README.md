@@ -23,6 +23,47 @@ Scout's free source stack, and the five settled decisions.
 
 ---
 
+## Any brain, any role
+
+Every reasoning role names a **role**, never a vendor. Which model answers is
+configuration:
+
+```bash
+LLM_DEFAULT=minimax        # run the whole roster on MiniMax
+LLM_DEFAULT=anthropic      # ...or on Claude
+LLM_PRODUCER=anthropic     # ...and keep one role on a stronger brain
+```
+
+Providers: `anthropic`, `minimax`, and `openai-compatible` for anything else
+speaking that dialect — OpenRouter, Together, vLLM, Ollama — via `LLM_BASE_URL`.
+A spec is `provider` or `provider:model`.
+
+```bash
+dailyfive brains            # which brain runs which role
+dailyfive brains --probe    # ...and whether each one answers
+```
+
+The differences that matter between brains are handled in one place
+(`src/dailyfive/llm.py`), not scattered through the agents: native JSON mode
+where the provider has one, reasoning-token suppression, and one error
+vocabulary. Verified end to end on MiniMax M3 — the full roster against live
+trend feeds, 11 calls, zero failures.
+
+## Seeing what it did
+
+The day page shows five songs. The **console** shows the machine that made them:
+
+| Page | Shows |
+|---|---|
+| `/` | runs, learning signal, which brain backs which role |
+| `/runs/<date>` | the themes the Scout found and from which feed, every brief, every job, **all 14 candidates including the nine that did not ship and exactly why**, every brain call with timing |
+| `/agents` | all eleven roles, their brains, activity and failures |
+| `/codex` | the Style Codex, persona cast, what it has learned, version history |
+| `/files` | everything delivered, by day |
+
+Run it with `dailyfive serve`. It is the same service that receives Suno's
+callbacks, so there is still one public surface to secure.
+
 ## The two things worth knowing up front
 
 **Four of the eleven agents have no language model in them at all.** The
@@ -116,6 +157,7 @@ shipped. Until then the system is grading its own homework, and it says so.
 |---|---|---|
 | `dailyfive preflight` | check everything before spending a credit | free |
 | `dailyfive signals` | test the seven trend feeds | free |
+| `dailyfive brains [--probe]` | which brain runs which role | free / a few tokens |
 | `dailyfive credits` | Suno balance | free |
 | `dailyfive personas list \| bootstrap \| set` | manage the recurring cast | one generation each |
 | `dailyfive run [--date] [--skip-art]` | the daily pipeline | the day's credits |
@@ -132,9 +174,8 @@ shipped. Until then the system is grading its own homework, and it says so.
 | Layer | Choice |
 |---|---|
 | Music | [sunoapi.org](https://docs.sunoapi.org/) — the only irreplaceable dependency |
-| Lyrics | MiniMax M3 (ModelArk exposes no text models) |
-| Cover art | BytePlus ModelArk — Seedream, 3000×3000 |
-| Reasoning agents | Claude — Scout, Director, A&R, Clearance, Producer |
+| Reasoning roles | any brain — MiniMax, Claude, or an OpenAI-compatible endpoint |
+| Cover art | BytePlus ModelArk — Seedream, 3000×3000 (no text models there) |
 | Audio QC + mastering | ffmpeg only — `ebur128`, `astats`, `silencedetect`. No LLM. |
 | Storage | DigitalOcean Spaces (S3-compatible) |
 | State | Postgres (SQLite works for day one) |
@@ -154,7 +195,7 @@ not post to a self-signed certificate.
 ## Tests
 
 ```bash
-pytest                    # 93 tests
+pytest                    # 132 tests
 pytest -m "not network"   # skip the four that hit live feeds
 ```
 

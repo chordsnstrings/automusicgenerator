@@ -111,7 +111,9 @@ def run(brief: dict, lyrics: str, style_string: str, *, use_model: bool = True) 
     )
 
     try:
-        result = ask_json(SYSTEM, user, schema_hint=SCHEMA, max_tokens=4000, temperature=0.3)
+        result = ask_json("clearance", SYSTEM, user, schema_hint=SCHEMA,
+                          max_tokens=4000, temperature=0.3,
+                          label=f"check:{brief.get('title', '?')[:30]}")
     except ProviderError as exc:
         # Clearance failing open would submit unchecked content; failing closed
         # would lose the slot. The rules pass already ran, so trust that.

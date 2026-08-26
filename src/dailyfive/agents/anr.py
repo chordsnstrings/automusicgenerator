@@ -82,7 +82,8 @@ def run(specs: list[dict], codex: Codex, *, history_days: int = 14) -> list[dict
         f"Produce exactly {len(specs)} briefs, one per spec, in spec order."
     )
 
-    result = ask_json(SYSTEM, user, schema_hint=SCHEMA, max_tokens=5000, temperature=1.0)
+    result = ask_json("anr", SYSTEM, user, schema_hint=SCHEMA,
+                      max_tokens=5000, temperature=1.0, label="briefs")
     raw = result.get("briefs") or []
 
     briefs: list[dict] = []

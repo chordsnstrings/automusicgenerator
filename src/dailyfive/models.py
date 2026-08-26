@@ -276,6 +276,30 @@ class Clip(Base):
     __table_args__ = (UniqueConstraint("job_id", "audio_id", name="uq_clip_audio"),)
 
 
+class AgentCall(Base):
+    """One brain call, recorded whether it succeeded or not.
+
+    This is what makes the roster visible rather than notional: which role ran,
+    which brain answered, how long it took, how much it moved, and what broke.
+    Without it "eleven agents" is a claim in a document.
+    """
+    __tablename__ = "agent_calls"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"), index=True)
+    role: Mapped[str] = mapped_column(String(40), index=True)
+    label: Mapped[str] = mapped_column(String(80), default="")
+    provider: Mapped[str | None] = mapped_column(String(40))
+    model: Mapped[str | None] = mapped_column(String(120))
+    ok: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    ms: Mapped[int] = mapped_column(Integer, default=0)
+    chars_in: Mapped[int] = mapped_column(Integer, default=0)
+    chars_out: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class Decision(Base):
     """The Producer's written reasoning for one run. Kept separate from Clip
     because it is prose about the whole field, not a per-clip fact."""
