@@ -62,6 +62,20 @@ def _check_secret(secret: str) -> None:
         raise HTTPException(status_code=404, detail="not found")
 
 
+@app.get("/healthz")
+def liveness() -> dict:
+    """Is the process alive? Nothing more.
+
+    Deliberately separate from /health, which also asks whether the database
+    answers and whether today's run shipped. A platform health check wired to
+    /health restarts the container whenever the database hiccups, which throws
+    away the one process that could have told you what the database said. This
+    one only proves the server is serving; /health stays the readiness and
+    status endpoint for humans and uptime monitors.
+    """
+    return {"ok": True}
+
+
 @app.get("/health")
 def health(response: Response) -> dict:
     """Liveness plus the two things that actually go wrong unattended.

@@ -6,6 +6,7 @@ import argparse
 import json
 import logging
 import sys
+import time
 from datetime import date, datetime
 
 from sqlalchemy import select
@@ -399,9 +400,43 @@ def cmd_credits(args) -> int:
     return 0
 
 
+
+def _init_db_with_retry(*, attempts: int = 6, fatal: bool = False) -> bool:
+    """Bring the schema up, tolerating a database that is not ready yet.
+
+    A managed cluster can refuse connections for a minute after a deploy — the
+    firewall rule is still propagating, or the cluster is mid-failover. Dying
+    on the first refusal produces a crashloop, and a crashlooping container is
+    the one state a platform cannot show you logs for: it is gone before the
+    log tail attaches. So retry, and if the database is still unreachable
+    afterwards, say so loudly and carry on. The process staying up is what
+    makes the failure readable — /health reports the exact database error, and
+    the next request retries the connection.
+    """
+    delay = 2.0
+    for attempt in range(1, attempts + 1):
+        try:
+            init_db()
+            if attempt > 1:
+                log.info("database ready after %d attempts", attempt)
+            return True
+        except Exception as exc:
+            if attempt == attempts:
+                log.error("database unreachable after %d attempts: %s", attempts, exc)
+                if fatal:
+                    raise
+                log.error("starting anyway — /health will report the database error")
+                return False
+            log.warning("database not ready (attempt %d/%d): %s; retrying in %.0fs",
+                        attempt, attempts, exc, delay)
+            time.sleep(delay)
+            delay = min(delay * 2, 32.0)
+    return False
+
+
 def cmd_serve(args) -> int:
     import uvicorn
-    init_db()
+    _init_db_with_retry()
     cfg = settings()
     print(f"callbacks: {cfg.public_base_url}/webhooks/{'*' * 8}/generate")
     print(f"ratings:   {cfg.public_base_url}/ratings")
@@ -413,7 +448,7 @@ def cmd_serve(args) -> int:
 def cmd_scheduler(args) -> int:
     """Long-running worker: runs the daily slots on its own clock."""
     from .scheduler import run_forever
-    init_db()
+    _init_db_with_retry()
     if args.dry_run:
         print("slots that would fire right now:")
         run_forever(once=True, dry_run=True)
