@@ -18,6 +18,22 @@ def test_health_is_answerable_with_an_empty_database(client):
     assert body["ok"] is True and body["latest_run"] is None
 
 
+def test_liveness_never_touches_the_database(client, monkeypatch):
+    """The platform health check must not restart the one process that can
+
+    explain a database outage. /healthz answers from the process alone, so a
+    cluster that stops answering leaves the server up and /health readable.
+    """
+    import dailyfive.web.app as web
+
+    def explode(*a, **kw):
+        raise RuntimeError("database is gone")
+
+    monkeypatch.setattr(web, "session_scope", explode)
+    assert client.get("/healthz").status_code == 200
+    assert client.get("/health").status_code == 503
+
+
 def test_wrong_webhook_secret_is_a_404_not_a_403(client):
     """A 403 confirms the path exists. A 404 tells a scanner nothing."""
     assert client.post("/webhooks/wrong/generate", json={}).status_code == 404
