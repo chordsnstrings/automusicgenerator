@@ -1,15 +1,16 @@
 # automusicgenerator
 
-An unattended pipeline that produces **five finished songs every day** — WAV, MP3,
-cover art and timestamped lyrics — into a dated folder on DigitalOcean Spaces.
+An unattended pipeline that produces **five finished songs every day** — three
+full-length, two short-form — as WAV, MP3, cover art and timestamped lyrics, into a
+dated folder on DigitalOcean Spaces.
 
 Eleven agents across five phases: **sense → write → render → judge → ship**, with a
 feedback loop that makes tomorrow's run different from today's.
 
 ```
-6 briefs  ->  12 clips  ->  QC gate  ->  producer  ->  5 shipped
-                            ~9 pass                    4 held as reference
-                            ~3 cut                     (rejection reasons logged)
+7 briefs  ->  14 clips  ->  QC gate  ->  producer  ->  5 shipped
+4 full                      ~11 pass                   3 full + 2 short
+3 short                      ~3 cut                    6 held as reference
 ```
 
 **Status: proposal, v0.1. No code yet.**

@@ -14,11 +14,11 @@ linked from the PR/issue this branch came from.
 
 | | |
 |---|---|
-| Ships daily | 5 songs — `master.wav`, `master.mp3`, `cover.jpg`, `lyrics.lrc`, `meta.json` |
-| Renders daily | 12 candidates (6 generations x 2 clips) |
+| Ships daily | 5 songs — 3 full-length, 2 short-form — as `master.wav`, `master.mp3`, `cover.jpg`, `lyrics.lrc`, `meta.json` |
+| Renders daily | 14 candidates (7 generations x 2 clips) |
 | Storage | DigitalOcean Spaces, one immutable dated folder per run |
 | Run window | ~90 minutes, mostly spent waiting on Suno |
-| Attention required | none, by design |
+| Attention required | ~30 seconds — you rate the five, which closes the learning loop |
 
 ---
 
@@ -27,8 +27,8 @@ linked from the PR/issue this branch came from.
 ### 2.1 A producer who picks 5 of 5 is not a producer
 
 Selection only means something when there is a surplus. Suno returns **two clips per
-generation call**, so six generations yield twelve candidates. Twelve in, five out —
-and every rejected clip becomes a labelled training example.
+generation call**, so seven generations yield fourteen candidates. Fourteen in, five
+out — and every rejected clip becomes a labelled training example.
 
 ### 2.2 Nothing in a purely-LLM roster catches a broken file
 
@@ -88,15 +88,18 @@ audio is fine.
   leading it is. Out: `signals.json`, 8-12 ranked themes with evidence.
 - **Music Director** — owns the **Style Codex**: a versioned, checkable document of
   production specs (BPM bands, key/mode, song form, hook placement, drop timing,
-  instrumentation palette, vocal register, mix reference). Encodes *characteristics*,
-  never "in the style of [named artist]" — which Suno rejects anyway.
-- **A&R** — turns themes and specs into six concrete briefs, enforcing spread across
-  genre, tempo, vocal gender and mood, checked against the last 14 days.
+  instrumentation palette, vocal register, mix reference). Also holds the **persona
+  cast** — 2-3 recurring acts, each with a fixed voice and sonic territory. Encodes
+  *characteristics*, never "in the style of [named artist]" — which Suno rejects anyway.
+- **A&R** — turns themes and specs into seven **typed** briefs (four full-length,
+  three short-form), assigns each a persona from the cast, and enforces spread across
+  genre, tempo and mood, checked against the last 14 days.
 - **Lyricist** — two drafts per brief, self-selects one, works to the Director's song
   form so structure tags match the arrangement the prompt requests.
 - **Clearance** — deterministic blocklist pass, then a model pass. Named living
   artists, lyric fragments echoing real songs, trademarks, filter-tripping language.
-- **Prompt Compiler** — compiles a brief into a valid Suno payload and nothing else.
+- **Prompt Compiler** — compiles a brief into a valid Suno payload and nothing else,
+  including `personaId` and — on short-form briefs only — an explicit `duration`.
   Enforces per-model character limits before the request leaves the building.
 - **Conductor** — not creative. Fires generations, receives webhooks, polls when they
   do not arrive, retries with backoff, tracks spend against a daily cap, mirrors every
@@ -105,8 +108,9 @@ audio is fine.
   and trailing silence, dead-air ratio, DC offset, hard-clip count. Rejects on
   thresholds; survivors normalised to -14 LUFS with a clean fade.
 - **Producer** — three independent scoring passes (hook strength in the first seven
-  seconds, vocal and mix quality, fit to today's trend sheet), picks five, writes down
-  why each rejection lost.
+  seconds, vocal and mix quality, fit to today's trend sheet), then fills each slot
+  from its own contest — three full-length, two short — and writes down why each
+  rejection lost.
 - **Packager** — requests the true WAV, encodes 320kbps MP3, generates cover art,
   writes ID3 tags and a timestamped `.lrc`, uploads the dated folder and manifest.
 - **Archivist** — one row per clip, shipped or not, joining brief, exact style string,
@@ -136,10 +140,10 @@ flowchart LR
 
   A2 -->|codex + specs| B1
   B3 -->|briefs + lyrics| C1
-  C2 -->|12 clips| D1
+  C2 -->|14 clips| D1
   D2 -->|5 picks| E1
   E1 --> OUT[("DO Spaces<br/>songs/YYYY-MM-DD/")]
-  E2 -.->|yesterday's outcomes| A1
+  E2 -.->|yesterday's ratings + outcomes| A1
 
   classDef ag fill:#f6f7f8,stroke:#8a9099,color:#13161a
 ```
@@ -152,10 +156,13 @@ forming an opinion about them.
 ### The funnel
 
 ```
-6 briefs  ->  12 clips  ->  QC gate  ->  producer  ->  5 shipped
-                            ~9 pass                    4 held as reference
-                            ~3 cut                     (rejection reasons logged)
+7 briefs  ->  14 clips  ->  QC gate  ->  producer  ->  5 shipped
+4 full                      ~11 pass                   3 full + 2 short
+3 short                      ~3 cut                    6 held as reference
 ```
+
+Surplus is sized per slot type: four full-length briefs contest three slots, three
+short-form contest two. A short-form cut cannot fill a full-length slot.
 
 Everything left of the producer runs **per-clip and independently** — a slow generation
 does not hold up the others. The producer is the single barrier, because ranking
@@ -198,7 +205,7 @@ Two rules do most of the work:
    **15 days** and download URLs are short-lived. Once a file is in your bucket, every
    Suno-side expiry stops being your problem.
 
-Rate ceiling is 20 requests / 10 seconds — six generations is nowhere near it. The
+Rate ceiling is 20 requests / 10 seconds — seven generations is nowhere near it. The
 binding constraints are credits (HTTP 429) and the retention clock, not throughput.
 
 ---
@@ -210,7 +217,7 @@ binding constraints are credits (HTTP 429) and the retention clock, not throughp
 ```
 spaces://<bucket>/songs/2026-08-27/
 ├─ manifest.json          # 5 entries: title, style, bpm, key, duration, checksums
-├─ index.html             # one page, 5 players, signed links (optional)
+├─ index.html             # 5 players + the rating control that closes the loop
 ├─ 01_slow-burn-in-june/
 │   ├─ master.wav         # Suno WAV, loudness-normalised to -14 LUFS
 │   ├─ master.mp3         # 320 kbps, ID3 tags + embedded cover
@@ -219,7 +226,7 @@ spaces://<bucket>/songs/2026-08-27/
 │   ├─ lyrics.lrc         # timestamped, from Suno's aligned lyrics
 │   └─ meta.json          # brief, full style string, every parameter, QC metrics
 ├─ 02_… 03_… 04_… 05_…
-└─ _rejected/             # the 7 that did not ship, MP3 only, with reasons
+└─ _rejected/             # the 9 that did not ship, MP3 only, with reasons
     └─ rejects.json
 ```
 
@@ -244,7 +251,7 @@ qc: lufs · true_peak · duration_delta · silence_ratio · clip_count · verdic
 producer: hook · mix · trend_fit · rank
 shipped: true|false
 reject_reason          <- the whole point
-outcome: plays · saves · your_rating    <- the field the system cannot fill in itself
+outcome: your_rating (daily) · plays · saves   <- the field you supply
 ```
 
 Those rows drive three updates: the **Style Codex**, **brief diversity rules**, and
@@ -255,7 +262,8 @@ Those rows drive three updates: the **Style Codex**, **brief diversity rules**, 
 A single $12-24/month droplet: a cron entry, a worker process, a small webhook
 endpoint on a public HTTPS URL. No GPU — all heavy lifting is somebody else's API.
 Two easy-to-miss requirements: the webhook endpoint must be **publicly reachable**, and
-**ffmpeg must be installed** (QC and MP3 encoding both depend on it).
+**ffmpeg must be installed** (QC and MP3 encoding both depend on it). That same endpoint
+also receives your daily ratings, so there is only one public surface to secure.
 
 ---
 
@@ -295,13 +303,13 @@ Character limits by model (enforced by the Compiler, not discovered at runtime):
 
 | Line | Per day | Est. USD/day |
 |---|---|---|
-| Suno generations | 6 calls -> 12 clips | **confirm against your plan** |
+| Suno generations | 7 calls -> 14 clips | **confirm against your plan** |
 | Suno WAV conversion | 5 tracks @ ~$0.05 | 0.25 |
-| Lyrics (MiniMax M3) | 12 drafts | ~0.05 |
+| Lyrics (MiniMax M3) | 14 drafts | ~0.06 |
 | Cover art (Seedream) | 5 images | ~0.20 |
 | Claude — 5 agent roles | ~15 calls | ~0.60 |
 | Droplet + Spaces | always on | ~0.60 |
-| **Everything except Suno** | 5 finished songs | **~$1.70/day (~$50/mo)** |
+| **Everything except Suno** | 5 finished songs | **~$1.75/day (~$52/mo)** |
 
 Published figure for WAV conversion is $0.05/track; credits run ~$0.005 at entry tiers
 with plans from $19-199/month. Generation credit cost varies by model version — call
@@ -310,31 +318,41 @@ the exact number in a minute.
 
 ---
 
-## 8. Open decisions
+## 8. Decisions
 
-These change the shape of the build and should be settled before code is written.
+### Taken
 
-1. **Where does the outcome signal come from?** A daily rating from you, real
-   play/save metrics, or a weekly manual review. Without one, the loop optimises for
-   the Producer's taste rather than reality.
-   *Recommend: a 30-second daily rating to start, real metrics later.*
-2. **One artist, or a different act every day?** Suno personas keep a voice consistent
-   across releases, which is what builds a followable catalogue.
-   *Recommend: 2-3 recurring personas rotating across the five slots.*
-3. **Full songs, or clip-length?** V5_5 takes an explicit 10-360s duration. TikTok
-   means 30-60s loopable hooks; a catalogue means 2.5-3.5 minute songs. Different
-   products, different briefs.
-   *Recommend: 3 full songs plus 2 short-form cuts per day.*
-4. **Which trend sources are worth paying for?** Free gets YouTube trending, Google
+**You rate the five each morning.** This is what makes the loop real. The rating
+control ships *inside* the day's delivered `index.html` and posts back to the same
+public endpoint that already receives Suno's callbacks — one surface to secure,
+nothing new to run. Without it the system optimises for the Producer agent's opinion,
+which drifts because nothing ever contradicts it.
+
+**Three full-length songs, two short-form cuts.** This makes briefs **typed**, and
+surplus has to be sized per type — hence seven briefs rather than six. Short-form cuts
+use `duration` on V5_5 at 30-60 seconds and are briefed differently: hook in the first
+two seconds, built to loop cleanly, no long intro. The Compiler sets `duration` only on
+those; full-length briefs let the model choose its own arrangement.
+
+**Two to three recurring personas.** The Style Codex holds a **persona cast** as well
+as production specs — each act with a fixed voice, a sonic territory and a lane it
+stays in. A&R assigns one per brief and rotates so every act appears several times a
+week. Bootstrap step this adds: personas must be *created* before day one, from a seed
+generation each, with their `personaId` stored in the codex. Suno offers both
+`style_persona` and `voice_persona` — voice is the one that makes an act recognisable
+across releases.
+
+### Still open
+
+1. **Which trend sources are worth paying for?** Free gets YouTube trending, Google
    Trends, Reddit, public charts — decent but lagging. Chartmetric/Soundcharts give
    real TikTok and Shazam velocity for ~$100-500/month.
-   *Recommend: start free, add a paid feed once the loop is closed.*
-5. **Does this ever publish, or only archive?** Distribution later changes what
+   *Recommend: start free — with daily ratings closing the loop, you will know within a
+   month whether the Scout is the weak link.*
+2. **Does this ever publish, or only archive?** Distribution later changes what
    Packager writes today (ISRCs, split sheets, platform artwork sizes) and is much
    cheaper to design in now than to retrofit across a back catalogue.
    *Recommend: archive-only now, distribution-ready metadata from day 1.*
-
----
 
 ## 9. Build order
 
