@@ -12,3 +12,12 @@ out/
 .pytest_cache/
 .coverage
 src/*.egg-info/
+
+# Scratch harnesses. Review agents write throwaway probes — a tracemalloc
+# check that a HEAD sends no body, a dump of rendered HTML — which are worth
+# running once and never worth keeping. They are named to sort last so they
+# run after the real suite, and more than one has reached a commit through a
+# `git add -A` that did not look at what it was staging.
+tests/test_zz_*.py
+tests/test_*_zz.py
+tests/test_probe_*.py
