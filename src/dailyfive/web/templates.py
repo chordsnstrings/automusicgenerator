@@ -18,7 +18,11 @@ from datetime import date
 
 CSS = """
 :root{--bg:#f2f2ef;--card:#fff;--ink:#16181b;--dim:#666c74;--rule:#dcdcd6;
-      --hot:#b4560b;--ok:#2c6b33}
+      --hot:#b4560b;--ok:#2c6b33;
+      /* Native <audio> controls are drawn by the browser, not this stylesheet.
+         Without color-scheme they stay light on a dark page — five white bars
+         against dark cards. This is the only way to theme them. */
+      color-scheme:light dark}
 @media(prefers-color-scheme:dark){:root{--bg:#111316;--card:#181b1f;--ink:#e8eaed;
       --dim:#8b929b;--rule:#2b3037;--hot:#e9a13b;--ok:#68b36e}}
 *{box-sizing:border-box}
@@ -38,8 +42,11 @@ audio{width:100%;margin:.5rem 0 .75rem}
       border-bottom:1px solid currentColor}
 .rate{margin-top:.9rem;padding-top:.85rem;border-top:1px solid var(--rule)}
 .rate span{color:var(--dim);font-size:.72rem;display:block;margin-bottom:.45rem}
-.btns{display:flex;gap:.3rem;flex-wrap:wrap}
-button{flex:1 1 2rem;min-width:2.1rem;padding:.5rem 0;font:inherit;font-size:.85rem;
+/* A grid, not a wrapping flex row: flex-wrap leaves a ragged 8 + 2 on a phone
+   with two stretched buttons, which is both ugly and harder to hit accurately.
+   Ten equal columns, or a tidy 5 x 2 once they stop fitting. */
+.btns{display:grid;grid-template-columns:repeat(10,1fr);gap:.3rem}
+button{padding:.5rem 0;font:inherit;font-size:.85rem;
        background:transparent;color:var(--ink);border:1px solid var(--rule);
        border-radius:3px;cursor:pointer}
 button:hover{border-color:var(--hot)}
@@ -48,19 +55,42 @@ button:disabled{opacity:.5;cursor:default}
 .done{color:var(--ok);font-size:.72rem;margin-top:.45rem;min-height:1.1em}
 footer{color:var(--dim);font-size:.72rem;margin-top:2.5rem;border-top:1px solid var(--rule);
        padding-top:1rem}
+@media(max-width:520px){
+  body{padding:1.75rem 1rem 3rem}
+  /* Stack the header: a title squeezed beside the meta column wraps to three
+     words on three lines. */
+  .hd{display:block}
+  .meta{text-align:left;white-space:normal;margin-top:.3rem}
+  .btns{grid-template-columns:repeat(5,1fr)}
+  button{padding:.62rem 0}
+}
 """
 
 JS = """
 const API=%(api)s;
-document.querySelectorAll('[data-clip]').forEach(card=>{
+const CARDS=[...document.querySelectorAll('[data-clip]')];
+
+function mark(card,score,label){
+  const out=card.querySelector('.done');
+  card.querySelectorAll('button[data-score]').forEach(b=>{
+    b.setAttribute('aria-pressed', Number(b.dataset.score)===Number(score)?'true':'false');});
+  if(label!==null) out.textContent=label;
+}
+
+CARDS.forEach(card=>{
   const id=Number(card.dataset.clip);
   const out=card.querySelector('.done');
+  // Show this browser's own last answer immediately, so the page is never blank
+  // while the server round-trip is in flight. The server overrides it below.
+  try{
+    const prev=localStorage.getItem('rating:'+id);
+    if(prev) mark(card,prev,'rated '+prev+'/10');
+  }catch(e){}
+
   card.querySelectorAll('button[data-score]').forEach(btn=>{
     btn.addEventListener('click',async()=>{
       const score=Number(btn.dataset.score);
-      card.querySelectorAll('button[data-score]').forEach(b=>{
-        b.setAttribute('aria-pressed', b===btn ? 'true':'false');});
-      out.textContent='saving…';
+      mark(card,score,'saving…');
       try{
         const r=await fetch(API+'/ratings',{method:'POST',
           headers:{'Content-Type':'application/json'},
@@ -73,14 +103,25 @@ document.querySelectorAll('[data-clip]').forEach(card=>{
       }
     });
   });
-  try{
-    const prev=localStorage.getItem('rating:'+id);
-    if(prev){
-      const b=card.querySelector('button[data-score="'+prev+'"]');
-      if(b){b.setAttribute('aria-pressed','true');out.textContent='rated '+prev+'/10';}
-    }
-  }catch(e){}
 });
+
+// Hydrate from the server. localStorage only knows what THIS browser did, so a
+// song rated on a phone would read as unrated on a laptop — and get rated twice.
+(async()=>{
+  if(!CARDS.length) return;
+  const ids=CARDS.map(c=>c.dataset.clip).join(',');
+  try{
+    const r=await fetch(API+'/ratings?clip_ids='+encodeURIComponent(ids));
+    if(!r.ok) return;
+    const {ratings}=await r.json();
+    CARDS.forEach(card=>{
+      const v=ratings[card.dataset.clip];
+      if(v==null) return;
+      mark(card,v,'rated '+v+'/10');
+      try{localStorage.setItem('rating:'+card.dataset.clip,String(v));}catch(e){}
+    });
+  }catch(e){/* offline is survivable — localStorage already filled in */}
+})();
 """
 
 
@@ -127,7 +168,10 @@ def _card(s: dict) -> str:
         f'<button data-score="{n}" aria-pressed="false" '
         f'aria-label="Rate {n} out of 10">{n}</button>' for n in range(1, 11))
 
-    audio = (f'<audio controls preload="none" src="{esc(s["mp3_url"])}"></audio>'
+    # preload="metadata" costs a few KB per song and is what makes the player
+    # show a real duration; with "none" every track reads 0:00 / 0:00 until
+    # played, which looks broken on a page whose whole job is to be glanced at.
+    audio = (f'<audio controls preload="metadata" src="{esc(s["mp3_url"])}"></audio>'
              if s.get("mp3_url") else
              '<p class="tags">audio unavailable — check the manifest</p>')
 

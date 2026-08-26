@@ -21,12 +21,13 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy import select
 
 from ..config import settings
 from ..db import init_db, session_scope
-from ..models import Clip, Job, Run
+from ..models import Clip, Job, Outcome, Run
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +39,21 @@ async def _lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="The Daily Five", docs_url=None, redoc_url=None, lifespan=_lifespan)
+
+# The rating control is the loop-closing mechanism, and it runs on a page served
+# from Spaces — a different origin from this receiver. A cross-origin POST with
+# a JSON content type triggers a preflight, so without these headers the browser
+# blocks every rating and the page reports a save failure with no server-side
+# trace at all. Ratings carry no credentials and no cookies, so a permissive
+# origin here grants nothing beyond what the endpoint already allows.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type"],
+    max_age=86400,
+)
 
 
 def _check_secret(secret: str) -> None:
@@ -165,6 +181,29 @@ async def submit_rating(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "clip_id": clip_id, "rating": rating})
 
 
+@app.get("/ratings")
+def existing_ratings(clip_ids: str = "") -> dict:
+    """Ratings already recorded for these clips.
+
+    The day page hydrates from this on load. Without it the page would only
+    know what is in *this* browser's localStorage — so a song rated on a phone
+    reads as unrated on a laptop, and you rate it twice.
+    """
+    wanted: list[int] = []
+    for raw in clip_ids.split(",")[:100]:
+        raw = raw.strip()
+        if raw.isdigit():
+            wanted.append(int(raw))
+    if not wanted:
+        return {"ratings": {}}
+    with session_scope() as s:
+        rows = s.execute(
+            select(Outcome.clip_id, Outcome.rating)
+            .where(Outcome.clip_id.in_(wanted),
+                   Outcome.rating.isnot(None))).all()
+    return {"ratings": {str(cid): rating for cid, rating in rows}}
+
+
 @app.get("/ratings/status")
 def rating_status() -> dict:
     from ..archivist import learning_status
@@ -175,12 +214,36 @@ def rating_status() -> dict:
 def root() -> str:
     from ..archivist import learning_status
     st = learning_status()
-    return (
-        "<title>The Daily Five</title>"
-        "<style>body{font-family:ui-monospace,monospace;max-width:44rem;"
-        "margin:4rem auto;padding:0 1.5rem;line-height:1.7}</style>"
-        "<h1>The Daily Five</h1>"
-        f"<p>{st['runs']} runs · {st['clips']} clips · {st['shipped']} shipped · "
-        f"{st['rated']} rated</p><p><b>Learning signal:</b> {st['signal']}</p>"
-        "<p>Callback receiver and rating endpoint. The songs live in Spaces.</p>"
-    )
+    runs = f"{st['runs']} run" + ("" if st["runs"] == 1 else "s")
+    return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>The Daily Five — receiver</title><style>
+:root{{--bg:#f2f2ef;--card:#fff;--ink:#16181b;--dim:#666c74;--rule:#dcdcd6;--hot:#b4560b}}
+@media(prefers-color-scheme:dark){{:root{{--bg:#111316;--card:#181b1f;--ink:#e8eaed;
+  --dim:#8b929b;--rule:#2b3037;--hot:#e9a13b}}}}
+body{{margin:0;background:var(--bg);color:var(--ink);padding:3.5rem 1.5rem;
+  font:15px/1.7 ui-monospace,"SF Mono",Menlo,monospace}}
+.w{{max-width:42rem;margin:0 auto}}
+h1{{font-size:1.4rem;letter-spacing:-.02em;margin:0 0 1.5rem}}
+.n{{display:flex;gap:0;border:1px solid var(--rule);border-radius:4px;
+  background:var(--card);margin-bottom:1.5rem;flex-wrap:wrap}}
+.n div{{flex:1 1 5rem;padding:.85rem 1rem;border-right:1px solid var(--rule)}}
+.n div:last-child{{border-right:0}}
+.n b{{display:block;font-size:1.35rem;letter-spacing:-.02em}}
+.n span{{color:var(--dim);font-size:.7rem;letter-spacing:.1em;text-transform:uppercase}}
+.sig{{border-left:2px solid var(--hot);padding:.15rem 0 .15rem 1rem;margin-bottom:1.5rem}}
+.sig span{{color:var(--dim);font-size:.7rem;letter-spacing:.1em;
+  text-transform:uppercase;display:block}}
+code{{color:var(--hot)}} p{{color:var(--dim)}}
+</style></head><body><div class="w">
+<h1>The Daily Five</h1>
+<div class="n">
+  <div><b>{st['runs']}</b><span>runs</span></div>
+  <div><b>{st['clips']}</b><span>clips</span></div>
+  <div><b>{st['shipped']}</b><span>shipped</span></div>
+  <div><b>{st['rated']}</b><span>rated</span></div>
+</div>
+<div class="sig"><span>Learning signal</span>{st['signal']}</div>
+<p>Callback receiver and rating endpoint — {runs} recorded.
+The songs themselves live in Spaces.</p>
+</div></body></html>"""
