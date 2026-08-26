@@ -1,0 +1,274 @@
+{
+  "name": "dailyfive",
+  "services": [
+    {
+      "name": "web",
+      "git": {
+        "repo_clone_url": "https://github.com/chordsnstrings/automusicgenerator.git",
+        "branch": "claude/ai-music-generation-agent-t1tyny"
+      },
+      "dockerfile_path": "Dockerfile",
+      "run_command": "dailyfive serve --host 0.0.0.0 --port 8080",
+      "envs": [
+        {
+          "key": "SUNO_API_KEY",
+          "value": "PUT_IT_IN_THE_APP_NOT_IN_GIT",
+          "scope": "RUN_AND_BUILD_TIME",
+          "type": "SECRET"
+        },
+        {
+          "key": "MINIMAX_API_KEY",
+          "value": "PUT_IT_IN_THE_APP_NOT_IN_GIT",
+          "scope": "RUN_AND_BUILD_TIME",
+          "type": "SECRET"
+        },
+        {
+          "key": "WEBHOOK_SECRET",
+          "value": "PUT_IT_IN_THE_APP_NOT_IN_GIT",
+          "scope": "RUN_AND_BUILD_TIME",
+          "type": "SECRET"
+        },
+        {
+          "key": "LLM_DEFAULT",
+          "value": "minimax",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "MINIMAX_TEXT_MODEL",
+          "value": "MiniMax-M3",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "SUNO_MODEL",
+          "value": "V5_5",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "AUDIO_STORE",
+          "value": "database",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "RETENTION_DAYS",
+          "value": "30",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "FULL_BRIEFS",
+          "value": "4",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "FULL_SLOTS",
+          "value": "3",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "SHORT_BRIEFS",
+          "value": "3",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "SHORT_SLOTS",
+          "value": "2",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "SHORT_DURATION_S",
+          "value": "45",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "DAILY_CREDIT_CAP",
+          "value": "200",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "SIGNAL_REGION",
+          "value": "US",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "POLL_INTERVAL_S",
+          "value": "20",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "GENERATION_TIMEOUT_S",
+          "value": "1200",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "WORK_DIR",
+          "value": "/tmp/dailyfive",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "DATABASE_URL",
+          "value": "${dailyfive-db.DATABASE_URL}",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "PUBLIC_BASE_URL",
+          "value": "${APP_URL}",
+          "scope": "RUN_AND_BUILD_TIME"
+        }
+      ],
+      "instance_size_slug": "apps-s-1vcpu-0.5gb",
+      "instance_count": 1,
+      "http_port": 8080,
+      "health_check": {
+        "initial_delay_seconds": 30,
+        "period_seconds": 30,
+        "failure_threshold": 5,
+        "http_path": "/healthz"
+      }
+    }
+  ],
+  "workers": [
+    {
+      "name": "scheduler",
+      "git": {
+        "repo_clone_url": "https://github.com/chordsnstrings/automusicgenerator.git",
+        "branch": "claude/ai-music-generation-agent-t1tyny"
+      },
+      "dockerfile_path": "Dockerfile",
+      "run_command": "dailyfive scheduler",
+      "envs": [
+        {
+          "key": "SUNO_API_KEY",
+          "value": "PUT_IT_IN_THE_APP_NOT_IN_GIT",
+          "scope": "RUN_AND_BUILD_TIME",
+          "type": "SECRET"
+        },
+        {
+          "key": "MINIMAX_API_KEY",
+          "value": "PUT_IT_IN_THE_APP_NOT_IN_GIT",
+          "scope": "RUN_AND_BUILD_TIME",
+          "type": "SECRET"
+        },
+        {
+          "key": "WEBHOOK_SECRET",
+          "value": "PUT_IT_IN_THE_APP_NOT_IN_GIT",
+          "scope": "RUN_AND_BUILD_TIME",
+          "type": "SECRET"
+        },
+        {
+          "key": "LLM_DEFAULT",
+          "value": "minimax",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "MINIMAX_TEXT_MODEL",
+          "value": "MiniMax-M3",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "SUNO_MODEL",
+          "value": "V5_5",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "AUDIO_STORE",
+          "value": "database",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "RETENTION_DAYS",
+          "value": "30",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "FULL_BRIEFS",
+          "value": "4",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "FULL_SLOTS",
+          "value": "3",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "SHORT_BRIEFS",
+          "value": "3",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "SHORT_SLOTS",
+          "value": "2",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "SHORT_DURATION_S",
+          "value": "45",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "DAILY_CREDIT_CAP",
+          "value": "200",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "SIGNAL_REGION",
+          "value": "US",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "POLL_INTERVAL_S",
+          "value": "20",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "GENERATION_TIMEOUT_S",
+          "value": "1200",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "WORK_DIR",
+          "value": "/tmp/dailyfive",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "DATABASE_URL",
+          "value": "${dailyfive-db.DATABASE_URL}",
+          "scope": "RUN_AND_BUILD_TIME"
+        },
+        {
+          "key": "PUBLIC_BASE_URL",
+          "value": "${APP_URL}",
+          "scope": "RUN_AND_BUILD_TIME"
+        }
+      ],
+      "instance_size_slug": "apps-s-1vcpu-1gb-fixed",
+      "instance_count": 1
+    }
+  ],
+  "databases": [
+    {
+      "name": "dailyfive-db",
+      "engine": "PG",
+      "production": true,
+      "cluster_name": "dailyfive-db",
+      "db_name": "dailyfive",
+      "db_user": "dailyfive"
+    }
+  ],
+  "region": "blr",
+  "ingress": {
+    "rules": [
+      {
+        "match": {
+          "path": {
+            "prefix": "/"
+          }
+        },
+        "component": {
+          "name": "web"
+        }
+      }
+    ]
+  },
+  "features": [
+    "buildpack-stack=ubuntu-22"
+  ]
+}

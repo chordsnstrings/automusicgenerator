@@ -183,14 +183,47 @@ shipped. Until then the system is grading its own homework, and it says so.
 
 ## Deploying
 
+Two shapes, and the choice comes down to one requirement: **the callback
+endpoint needs real HTTPS**, because Suno will not post to a self-signed
+certificate and the browser will not let the day page rate a song over
+plain HTTP.
+
+### DigitalOcean App Platform — the default
+
+`deploy/app-platform.json` is the app spec: one web service, one worker on
+the same image, and a linked managed Postgres. TLS on the
+`*.ondigitalocean.app` hostname is issued and renewed by the platform at no
+charge, so there is no certbot, no renewal timer, and no cron job that
+silently stops renewing.
+
+```bash
+doctl apps create --spec deploy/app-platform.json
+psql "$ADMIN_DATABASE_URL" -f deploy/grant-schema.sql   # once, see below
+```
+
+Two things bite on a fresh cluster, and both are invisible from the error:
+
+* **The database firewall.** A tag rule does not cover an App Platform app —
+  apps are not droplets and carry no tags. Add an explicit
+  `{"type": "app", "value": "<app-id>"}` trusted source, or every connection
+  is refused with `server closed the connection unexpectedly`.
+* **Schema ownership.** Postgres 15 removed the implicit `CREATE` on
+  `public`, and a managed database belongs to the provider's admin role — so
+  the application user connects fine and cannot create a single table.
+  `deploy/grant-schema.sql` fixes it once, as the admin role.
+
+The worker keeps its own clock (`dailyfive scheduler`): purge 03:00, backup
+04:30, run 05:10, all UTC.
+
+### A droplet — when you want the box
+
 ```bash
 sudo APP_DIR=/opt/dailyfive bash deploy/setup.sh
 ```
 
 Installs ffmpeg and Postgres, creates the service user, and enables a systemd
 timer at 05:10 UTC plus the receiver. `deploy/nginx.conf.example` has the
-reverse-proxy shape; the callback endpoint needs real HTTPS, because Suno will
-not post to a self-signed certificate.
+reverse-proxy shape, and certbot is yours to run and to keep renewing.
 
 ## Tests
 
