@@ -36,7 +36,15 @@ def _today_at(hour: int, minute: int) -> datetime:
     return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
 
-def run_forever(*, tick_seconds: int = 60, once: bool = False) -> None:
+def run_forever(*, tick_seconds: int = 60, once: bool = False,
+                dry_run: bool = False) -> None:
+    """Wake on a timer and fire whatever slot is due.
+
+    ``dry_run`` reports what *would* fire and touches nothing. That exists
+    because ``--once`` on a machine where the day's slots have already passed
+    will start a real run and spend real credits — a sharp edge on a command
+    someone would reasonably reach for just to check the configuration.
+    """
     from .db import init_db
     init_db()
 
@@ -59,6 +67,10 @@ def run_forever(*, tick_seconds: int = 60, once: bool = False) -> None:
                 last_done[name] = now.date()
                 continue
             last_done[name] = now.date()
+            if dry_run:
+                log.info("would fire %s (due %s)", name, due_at.strftime("%H:%M UTC"))
+                print(f"  would fire {name} (due {due_at.strftime('%H:%M UTC')})")
+                continue
             _fire(name)
         if once:
             return

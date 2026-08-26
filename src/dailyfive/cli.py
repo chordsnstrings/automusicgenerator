@@ -414,6 +414,10 @@ def cmd_scheduler(args) -> int:
     """Long-running worker: runs the daily slots on its own clock."""
     from .scheduler import run_forever
     init_db()
+    if args.dry_run:
+        print("slots that would fire right now:")
+        run_forever(once=True, dry_run=True)
+        return 0
     print("scheduler starting — run 05:10, backup 04:30, purge 03:00 (UTC)")
     run_forever(tick_seconds=args.tick, once=args.once)
     return 0
@@ -549,7 +553,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("scheduler", help="run the daily slots as a worker")
     s.add_argument("--tick", type=int, default=60)
-    s.add_argument("--once", action="store_true", help="evaluate slots once and exit")
+    s.add_argument("--once", action="store_true",
+                   help="evaluate slots once and exit — FIRES them for real")
+    s.add_argument("--dry-run", action="store_true",
+                   help="report which slots are due without firing any")
     s.set_defaults(fn=cmd_scheduler)
 
     s = sub.add_parser("init-db", help="create tables and seed the codex")
