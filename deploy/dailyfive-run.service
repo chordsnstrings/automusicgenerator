@@ -1,0 +1,24 @@
+[Unit]
+Description=The Daily Five — daily pipeline
+After=network-online.target dailyfive-web.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=dailyfive
+WorkingDirectory=/opt/dailyfive
+EnvironmentFile=/opt/dailyfive/.env
+ExecStart=/opt/dailyfive/venv/bin/dailyfive run
+# A run that outlives this has hung; the timer will start a fresh one tomorrow
+# and the pipeline resumes from the phase it recorded.
+TimeoutStartSec=5400
+Nice=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/dailyfive/work
+
+[Install]
+WantedBy=multi-user.target

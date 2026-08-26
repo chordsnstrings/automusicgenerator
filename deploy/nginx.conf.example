@@ -1,0 +1,27 @@
+# /etc/nginx/sites-available/dailyfive
+# certbot --nginx will add the TLS block; this is the pre-TLS shape.
+
+server {
+    listen 80;
+    server_name songs.yourdomain.com;
+
+    # Suno posts callbacks here. Keep the secret path segment out of the logs:
+    # it is the only thing stopping a stranger from forging generation results.
+    location ~ ^/webhooks/ {
+        access_log off;
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # Callbacks must be acknowledged fast — Suno gives up after three
+        # consecutive delivery failures, and a slow response counts as one.
+        proxy_read_timeout 15s;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}

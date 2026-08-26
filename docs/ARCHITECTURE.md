@@ -3,7 +3,9 @@
 An unattended pipeline that produces **five finished songs every day** — WAV, MP3,
 cover art and timestamped lyrics — into a dated folder on DigitalOcean Spaces.
 
-Status: **v0.3 — design settled, no code yet.** All five open decisions answered.
+Status: **v0.3 — implemented.** All five decisions settled; 93 tests pass.
+Nothing has run against a live API yet because no credentials are configured.
+See the README for setup.
 
 Visual version (diagrams, cost tables, roster): see the published architecture page
 linked from the PR/issue this branch came from.
@@ -108,7 +110,9 @@ audio is fine.
 - **QC Engineer** — true peak, integrated LUFS, real vs. requested duration, leading
   and trailing silence, dead-air ratio, DC offset, hard-clip count. Rejects on
   thresholds; survivors get a clean trim and fade. Loudness normalisation to -14 LUFS
-  is applied to the **MP3 only** — see §6.
+  is applied to the **MP3 only** — see §6. Implemented with ffmpeg alone
+  (`ebur128`, `astats`, `silencedetect`) rather than a signal-processing library:
+  ffmpeg is needed for encoding regardless, so this adds no dependency.
 - **Producer** — three independent scoring passes (hook strength in the first seven
   seconds, vocal and mix quality, fit to today's trend sheet), then fills each slot
   from its own contest — three full-length, two short — and writes down why each
@@ -318,7 +322,7 @@ also receives your daily ratings, so there is only one public surface to secure.
 | MiniMax | lyrics (M3); optional second music supplier | Lyricist | music billing needs a pay-as-you-go balance, not just a plan key |
 | BytePlus ModelArk | cover art (Seedream); optional video loops (Seedance) | Packager | no text models exposed — art only |
 | Claude | Scout, Director, A&R, Clearance, Producer | 5 agents | the reasoning-heavy roles |
-| ffmpeg / librosa | QC measurement, mastering, MP3 encode | QC, Packager | local, free, deterministic |
+| ffmpeg | QC measurement, mastering, MP3 encode | QC, Packager | local, free, deterministic |
 | DO Spaces | every artefact, forever | Conductor, Packager | S3-compatible; set a lifecycle rule |
 
 ### Suno endpoints in use
@@ -329,6 +333,8 @@ also receives your daily ratings, so there is only one public surface to secure.
 | `GET /api/v1/generate/record-info` | poll fallback when a callback does not arrive |
 | `POST /api/v1/wav/generate` | true WAV conversion for the 5 picks |
 | `POST /api/v1/lyrics` | lyrics fallback (200-char prompt cap) |
+| `POST /api/v1/generate/generate-persona` | build the recurring cast — synchronous, one per audio |
+| `POST /api/v1/generate/get-timestamped-lyrics` | word alignment, for the .lrc |
 | `POST /api/v1/vocal-removal/generate` | optional stems — 2, 12 or single-instrument |
 | `GET /api/v1/generate/credit` | budget guard, called before and after each run |
 
@@ -399,9 +405,16 @@ V5_5 at 30-60s and are briefed differently: hook inside two seconds, built to lo
 intro.
 
 **Two to three recurring personas.** The Style Codex holds a persona cast alongside its
-production specs; A&R assigns and rotates them. Bootstrap step: personas must be created
-from a seed generation before day one, with `personaId` stored in the codex.
-`voice_persona` is the axis that makes an act recognisable across releases.
+production specs; A&R assigns and rotates them, and no persona may take more than half
+the day's slots — enforced deterministically, not requested of the model. Bootstrap step:
+`dailyfive personas bootstrap` generates a seed song per persona and calls
+`/api/v1/generate/generate-persona` on a 10-30 second vocal segment of it, storing the
+returned `personaId` in the codex.
+
+One correction found during implementation: this produces a **`style_persona`**, not a
+`voice_persona`. The latter needs a `voiceId` from the separate Suno Voice workflow and
+is V5/V5_5 only. The seed cast and the Compiler both default to `style_persona`
+accordingly.
 
 **Free trend sources.** Seven feeds with real documented access — see §7 for the stack,
 the two traps, and the honest limits. Revisit paid feeds only once there is evidence the
@@ -432,3 +445,78 @@ losing a file.
 *Suno API surface verified against <https://docs.sunoapi.org/>, August 2026 —
 endpoints, model versions, character limits, rate ceiling, callback semantics and the
 15-day retention window. Figures marked "est." are estimates, not quotes.*
+
+
+---
+
+## 10. Implementation notes
+
+Written after the code existed. These are the things the design did not predict.
+
+### Layout
+
+```
+src/dailyfive/
+├── config.py        settings, and a require() that names every missing key at once
+├── models.py        the eight tables
+├── db.py            engine, session scope, SQLite pragmas
+├── http.py          retry with backoff; one place that decides "retryable"
+├── storage.py       DO Spaces
+├── qc.py            measurement — no LLM
+├── conductor.py     job state machine, poll fallback, mirroring — no LLM
+├── packager.py      mastering, art, tags, .lrc, distribution block
+├── archivist.py     the learning record and the weekly retro
+├── codex.py         the Style Codex and persona cast, versioned
+├── pipeline.py      the five phases, with resume
+├── cli.py           operator commands
+├── agents/          the seven roles that need a model
+├── providers/       suno, minimax, modelark
+├── signals/         the seven free feeds
+└── web/             callback receiver, rating endpoint, the delivered day page
+```
+
+### Four bugs the tests caught that the design did not anticipate
+
+1. **`await_all` waited on the wrong state set.** It treated only
+   `{MIRRORED, FAILED, ABANDONED}` as terminal, but mirroring is a later phase —
+   so a perfectly successful generation was waited on until timeout. Generation
+   completion and mirroring are now separate sets.
+
+2. **Naive vs. aware datetimes on SQLite.** `DateTime(timezone=True)` reads back
+   aware on Postgres and naive on SQLite, so the poll-age comparison raised —
+   and only ever on the SQLite path, which is the one people start on.
+
+3. **Unfollowed redirects looked like a parse bug.** Apple's RSS host issues a
+   permanent redirect; an unfollowed 301 arrives as a non-JSON body rather than
+   an error status, so it surfaced as "Expecting value: line 1 column 1" at the
+   call site. Fixed in the shared HTTP helper, where it would have bitten other
+   providers too.
+
+4. **A `DATABASE_URL` pointing at a subdirectory failed with a bare traceback.**
+   Now the directory is created.
+
+### Things that are deliberately deterministic
+
+Where a model could have been used but was not, because the failure mode of
+getting it wrong is silent:
+
+- **Slot contract.** The Producer's picks are re-checked against the slot counts;
+  a model returning four full picks for three slots gets the top three.
+- **Persona balance.** No act takes more than half the day, enforced after the fact.
+- **Payload limits.** The Compiler has an independent `validate()` that re-derives
+  the same rules rather than sharing code with the builder — a validator sharing
+  code with what it validates cannot catch a bug in the shared part.
+- **Diversity.** A model asked to avoid repetition still repeats; a tuple check on
+  (mood, tempo band, subject) costs nothing.
+- **Idempotency.** The job row is committed *before* the request is sent, so a
+  process dying between POST and commit resumes rather than re-buying.
+
+### What is not implemented
+
+- **Distribution.** The `distribution` block is reserved and empty by decision.
+  Nothing populates it.
+- **Vocal separation / stems.** The client method exists; no phase calls it.
+- **MiniMax as a second music supplier.** The client can do it; the pipeline does
+  not, because one supplier is one failure mode to understand.
+- **Video.** Seedance and H3 are reachable through the existing providers, but
+  nothing in the daily run makes a video.

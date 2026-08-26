@@ -1,0 +1,311 @@
+"""The eight tables.
+
+Two consumers with different needs share this schema. The Conductor needs
+crash-safe resume: every externally-visible action is recorded before it is
+taken, so a process that dies mid-run can be restarted without double-spending.
+The Archivist needs the learning record: one ``Clip`` row per candidate,
+written whether or not it shipped, because the rejections are what teach.
+"""
+
+from __future__ import annotations
+
+import enum
+from datetime import date, datetime, timezone
+
+from sqlalchemy import (JSON, Boolean, Date, DateTime, Enum, Float, ForeignKey,
+                        Integer, String, Text, UniqueConstraint)
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class RunPhase(str, enum.Enum):
+    """Where a run got to. Restarting resumes from the recorded phase."""
+    CREATED = "created"
+    SENSED = "sensed"
+    BRIEFED = "briefed"
+    WRITTEN = "written"
+    SUBMITTED = "submitted"
+    RENDERED = "rendered"
+    JUDGED = "judged"
+    SHIPPED = "shipped"
+    FAILED = "failed"
+
+
+class JobState(str, enum.Enum):
+    """Our view of a Suno task.
+
+    The middle five mirror Suno's own ``status`` values; the outer ones are
+    ours. MIRRORED is the only state that means the bytes are safe — everything
+    before it depends on a URL that expires.
+    """
+    QUEUED = "queued"
+    SUBMITTED = "submitted"
+    PENDING = "pending"
+    TEXT_SUCCESS = "text_success"
+    FIRST_SUCCESS = "first_success"
+    SUCCESS = "success"
+    MIRRORED = "mirrored"
+    FAILED = "failed"
+    ABANDONED = "abandoned"
+
+
+TERMINAL_JOB_STATES = {JobState.MIRRORED, JobState.FAILED, JobState.ABANDONED}
+
+# Suno status -> our state. Anything unmapped is treated as a failure and the
+# raw value is kept in Job.last_error so a new status value shows up in the log
+# rather than silently stalling the run.
+SUNO_STATUS_MAP = {
+    "PENDING": JobState.PENDING,
+    "TEXT_SUCCESS": JobState.TEXT_SUCCESS,
+    "FIRST_SUCCESS": JobState.FIRST_SUCCESS,
+    "SUCCESS": JobState.SUCCESS,
+}
+
+SUNO_FAILURE_STATUSES = {
+    "CREATE_TASK_FAILED": ("transient", True),
+    "GENERATE_AUDIO_FAILED": ("render", True),
+    "CALLBACK_EXCEPTION": ("callback", True),
+    "SENSITIVE_WORD_ERROR": ("moderation", False),
+}
+
+
+class SlotType(str, enum.Enum):
+    FULL = "full"
+    SHORT = "short"
+
+
+class Run(Base):
+    __tablename__ = "runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_date: Mapped[date] = mapped_column(Date, unique=True, index=True)
+    phase: Mapped[RunPhase] = mapped_column(Enum(RunPhase), default=RunPhase.CREATED)
+    codex_version: Mapped[int | None] = mapped_column(Integer)
+    credits_start: Mapped[int | None] = mapped_column(Integer)
+    credits_end: Mapped[int | None] = mapped_column(Integer)
+    error: Mapped[str | None] = mapped_column(Text)
+    notes: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    briefs: Mapped[list["Brief"]] = relationship(back_populates="run", cascade="all, delete-orphan")
+    jobs: Mapped[list["Job"]] = relationship(back_populates="run", cascade="all, delete-orphan")
+    clips: Mapped[list["Clip"]] = relationship(back_populates="run", cascade="all, delete-orphan")
+
+    @property
+    def credits_spent(self) -> int | None:
+        if self.credits_start is None or self.credits_end is None:
+            return None
+        return max(0, self.credits_start - self.credits_end)
+
+
+class Signal(Base):
+    """One theme the Scout surfaced, with the evidence that produced it."""
+    __tablename__ = "signals"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), index=True)
+    rank: Mapped[int] = mapped_column(Integer)
+    theme: Mapped[str] = mapped_column(String(200))
+    sentiment: Mapped[str] = mapped_column(String(80))
+    sources: Mapped[list] = mapped_column(JSON, default=list)
+    evidence: Mapped[str] = mapped_column(Text, default="")
+    lead: Mapped[str] = mapped_column(String(20), default="moderate")
+    confidence: Mapped[float] = mapped_column(Float, default=0.5)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class CodexVersion(Base):
+    """The Style Codex and persona cast, versioned.
+
+    Never updated in place — the Director writes a new row with a diff and a
+    rationale, so a regression can be traced to the edit that caused it.
+    """
+    __tablename__ = "codex_versions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    body: Mapped[dict] = mapped_column(JSON)
+    personas: Mapped[list] = mapped_column(JSON, default=list)
+    diff: Mapped[str] = mapped_column(Text, default="")
+    rationale: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Brief(Base):
+    __tablename__ = "briefs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), index=True)
+    slot_type: Mapped[SlotType] = mapped_column(Enum(SlotType))
+    idx: Mapped[int] = mapped_column(Integer)
+
+    title: Mapped[str] = mapped_column(String(200))
+    theme: Mapped[str] = mapped_column(Text)
+    persona_id: Mapped[str | None] = mapped_column(String(120))
+    persona_name: Mapped[str | None] = mapped_column(String(120))
+
+    # Musical spec from the Director — the checkable half of the brief.
+    bpm: Mapped[int | None] = mapped_column(Integer)
+    musical_key: Mapped[str | None] = mapped_column(String(40))
+    song_form: Mapped[str | None] = mapped_column(Text)
+    instrumentation: Mapped[str | None] = mapped_column(Text)
+    vocal_gender: Mapped[str | None] = mapped_column(String(4))
+    style_string: Mapped[str | None] = mapped_column(Text)
+    negative_tags: Mapped[str | None] = mapped_column(Text)
+
+    diversity_vector: Mapped[dict] = mapped_column(JSON, default=dict)
+    lyrics: Mapped[str | None] = mapped_column(Text)
+    lyric_hash: Mapped[str | None] = mapped_column(String(64))
+    clearance: Mapped[dict] = mapped_column(JSON, default=dict)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    dropped_reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    run: Mapped["Run"] = relationship(back_populates="briefs")
+    jobs: Mapped[list["Job"]] = relationship(back_populates="brief", cascade="all, delete-orphan")
+
+    __table_args__ = (UniqueConstraint("run_id", "slot_type", "idx", name="uq_brief_slot"),)
+
+
+class Job(Base):
+    """One Suno generation task.
+
+    ``idempotency_key`` is what makes a crashed run safe to restart: the
+    Conductor looks for an existing job with the same key before submitting,
+    so a process that died between POST and commit does not pay twice.
+    """
+    __tablename__ = "jobs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), index=True)
+    brief_id: Mapped[int] = mapped_column(ForeignKey("briefs.id", ondelete="CASCADE"), index=True)
+
+    idempotency_key: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    task_id: Mapped[str | None] = mapped_column(String(120), index=True)
+    state: Mapped[JobState] = mapped_column(Enum(JobState), default=JobState.QUEUED, index=True)
+
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    callbacks_seen: Mapped[int] = mapped_column(Integer, default=0)
+    polls: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    failure_kind: Mapped[str | None] = mapped_column(String(40))
+
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    run: Mapped["Run"] = relationship(back_populates="jobs")
+    brief: Mapped["Brief"] = relationship(back_populates="jobs")
+    clips: Mapped[list["Clip"]] = relationship(back_populates="job", cascade="all, delete-orphan")
+
+
+class Clip(Base):
+    """The learning record. One row per candidate, shipped or not.
+
+    Everything the Archivist needs to answer "which style strings actually
+    work" lives here, denormalised on purpose — a query that has to join five
+    tables to compare two prompts does not get written.
+    """
+    __tablename__ = "clips"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), index=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), index=True)
+    brief_id: Mapped[int] = mapped_column(ForeignKey("briefs.id", ondelete="CASCADE"), index=True)
+
+    audio_id: Mapped[str] = mapped_column(String(120), index=True)
+    variant: Mapped[int] = mapped_column(Integer, default=0)  # 0 or 1 of the pair
+
+    # What produced it — denormalised so a single SELECT answers "what worked".
+    slot_type: Mapped[SlotType] = mapped_column(Enum(SlotType))
+    theme: Mapped[str | None] = mapped_column(Text)
+    style_string: Mapped[str | None] = mapped_column(Text)
+    negative_tags: Mapped[str | None] = mapped_column(Text)
+    persona_id: Mapped[str | None] = mapped_column(String(120))
+    model: Mapped[str | None] = mapped_column(String(40))
+    vocal_gender: Mapped[str | None] = mapped_column(String(4))
+    style_weight: Mapped[float | None] = mapped_column(Float)
+    weirdness: Mapped[float | None] = mapped_column(Float)
+    audio_weight: Mapped[float | None] = mapped_column(Float)
+    bpm_target: Mapped[int | None] = mapped_column(Integer)
+    musical_key: Mapped[str | None] = mapped_column(String(40))
+    song_form: Mapped[str | None] = mapped_column(Text)
+    lyric_hash: Mapped[str | None] = mapped_column(String(64))
+
+    # What came back.
+    title: Mapped[str | None] = mapped_column(String(200))
+    tags: Mapped[str | None] = mapped_column(Text)
+    duration_s: Mapped[float | None] = mapped_column(Float)
+    source_audio_url: Mapped[str | None] = mapped_column(Text)
+    source_image_url: Mapped[str | None] = mapped_column(Text)
+    local_path: Mapped[str | None] = mapped_column(Text)
+    spaces_key: Mapped[str | None] = mapped_column(Text)
+    wav_task_id: Mapped[str | None] = mapped_column(String(120))
+    wav_url: Mapped[str | None] = mapped_column(Text)
+
+    # What measurement said.
+    qc: Mapped[dict] = mapped_column(JSON, default=dict)
+    qc_verdict: Mapped[str | None] = mapped_column(String(20), index=True)
+    qc_reason: Mapped[str | None] = mapped_column(Text)
+
+    # What the Producer said.
+    score_hook: Mapped[float | None] = mapped_column(Float)
+    score_mix: Mapped[float | None] = mapped_column(Float)
+    score_trend: Mapped[float | None] = mapped_column(Float)
+    score_total: Mapped[float | None] = mapped_column(Float)
+    rank: Mapped[int | None] = mapped_column(Integer)
+    shipped: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    reject_reason: Mapped[str | None] = mapped_column(Text)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    run: Mapped["Run"] = relationship(back_populates="clips")
+    job: Mapped["Job"] = relationship(back_populates="clips")
+    outcome: Mapped["Outcome | None"] = relationship(back_populates="clip", uselist=False,
+                                                     cascade="all, delete-orphan")
+
+    __table_args__ = (UniqueConstraint("job_id", "audio_id", name="uq_clip_audio"),)
+
+
+class Decision(Base):
+    """The Producer's written reasoning for one run. Kept separate from Clip
+    because it is prose about the whole field, not a per-clip fact."""
+    __tablename__ = "decisions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("runs.id", ondelete="CASCADE"), index=True)
+    rationale: Mapped[str] = mapped_column(Text, default="")
+    picks: Mapped[list] = mapped_column(JSON, default=list)
+    rejections: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Outcome(Base):
+    """Your rating, and anything reality adds later.
+
+    This is the only field the pipeline cannot fill in for itself. Until it is
+    populated, the loop optimises for the Producer's opinion.
+    """
+    __tablename__ = "outcomes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    clip_id: Mapped[int] = mapped_column(ForeignKey("clips.id", ondelete="CASCADE"),
+                                         unique=True, index=True)
+    rating: Mapped[int | None] = mapped_column(Integer)  # 1–10, from the day page
+    note: Mapped[str | None] = mapped_column(Text)
+    plays: Mapped[int | None] = mapped_column(Integer)
+    saves: Mapped[int | None] = mapped_column(Integer)
+    rated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow,
+                                                 onupdate=utcnow)
+
+    clip: Mapped["Clip"] = relationship(back_populates="outcome")

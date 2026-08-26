@@ -1,0 +1,14 @@
+[Unit]
+Description=Run The Daily Five once a day
+
+[Timer]
+# 05:10 UTC. Late enough that the previous day's charts have settled,
+# early enough that the songs are waiting when you wake up.
+OnCalendar=*-*-* 05:10:00
+# If the droplet was off at 05:10, run on the next boot rather than skipping
+# a day — a missed day is a hole in the learning record.
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
