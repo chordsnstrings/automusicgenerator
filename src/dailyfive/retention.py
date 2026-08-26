@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from .config import settings
 from .db import session_scope
@@ -115,3 +115,38 @@ def _projected(cfg) -> float:
     """
     per_song_mb = 55          # a ~4 minute WAV plus its 320kbps MP3
     return round(cfg.total_slots * cfg.retention_days * per_song_mb / 1000, 1)
+
+
+def restamp(*, dry_run: bool = False) -> dict:
+    """Move every unexpired row onto the current window.
+
+    ``expires_at`` is stamped when a row is written, which is what lets the
+    purge read one column and nothing else — but it also means changing
+    RETENTION_DAYS does nothing for the files already stored. They keep the
+    window that was in force the day they arrived, so a shortened policy
+    silently does not apply to anything you already have, and a lengthened one
+    silently does not extend it.
+
+    Computed from ``created_at``, never from today: re-running this must not
+    keep pushing an old file's expiry further out. A file already past the new
+    window becomes due immediately, which is the correct reading of the policy
+    rather than a special case to soften.
+    """
+    moved, seen = 0, 0
+    cfg = settings()
+    window = timedelta(days=cfg.retention_days)
+    with session_scope() as s:
+        rows = s.execute(select(StoredFile.id, StoredFile.created_at,
+                                StoredFile.expires_at)
+                         .where(StoredFile.expires_at.isnot(None))).all()
+        for row_id, created, expires in rows:
+            seen += 1
+            want = created + window
+            if expires is not None and abs((expires - want).total_seconds()) < 1:
+                continue
+            moved += 1
+            if not dry_run:
+                s.execute(update(StoredFile).where(StoredFile.id == row_id)
+                          .values(expires_at=want))
+    return {"checked": seen, "restamped": moved, "retention_days": cfg.retention_days,
+            "due_now": due(), "dry_run": dry_run}

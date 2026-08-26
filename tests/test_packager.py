@@ -176,3 +176,28 @@ def test_the_wav_master_carries_no_metadata(tmp_path):
     body = out.read_bytes()
     for marker in (b"LIST", b"INFO", b"ISFT", b"ICMT", b"suno", b"Lavf"):
         assert marker not in body, marker
+
+
+def test_the_musical_block_carries_the_genre_and_the_distribution_block_still_does_not():
+    """docs/ARCHITECTURE.md:250 — "all of them stay null", with no exception
+    clause, and the value of the rule comes from having none. The genre is
+    recorded where it was decided, not where it would be a claim about a
+    distributor's vocabulary."""
+    meta = build_meta({"title": "T", "slot_type": "full"},
+                      {"title": "T", "genre_family": "country",
+                       "genre": "country-soul"},
+                      date(2026, 8, 27), 1, {})
+    assert meta["musical"]["genre_family"] == "country"
+    assert meta["musical"]["genre"] == "country-soul"
+    assert meta["distribution"]["primary_genre"] is None
+
+
+def test_a_song_briefed_before_genre_was_recorded_stays_unlabelled():
+    """The six briefs and twelve clips already in production carry a NULL. A
+    model inferring their genre from the style strings afterwards is exactly
+    the fabricated track record this codebase refuses to produce."""
+    meta = build_meta({"title": "T", "slot_type": "full"},
+                      {"title": "T", "style_string": "slow country-folk ballad"},
+                      date(2026, 8, 27), 1, {})
+    assert meta["musical"]["genre_family"] is None
+    assert meta["musical"]["genre"] is None

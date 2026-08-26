@@ -286,6 +286,18 @@ def build_meta(clip: dict, brief: dict, run_date: date, slot_index: int,
             "model": brief.get("persona_model"),
         },
         "musical": {
+            # Here and deliberately not in the distribution block, whose rule
+            # is that all of it stays null and whose value comes from having no
+            # exceptions. A distributor does want a genre at delivery, but from
+            # its own controlled vocabulary — DistroKid's, TuneCore's and CD
+            # Baby's lists are all different and none of them is ours — so
+            # filling primary_genre from this label would assert a mapping we
+            # have no authority to make, in the one block built not to do that.
+            # Recording it here is also what finally makes ARCHITECTURE.md:264
+            # true: it claimed genre was "already recorded elsewhere in the same
+            # file" when it appeared nowhere but inside the null block itself.
+            "genre_family": brief.get("genre_family"),
+            "genre": brief.get("genre"),
             "bpm": brief.get("bpm"),
             "key": brief.get("musical_key") or brief.get("key"),
             "song_form": brief.get("song_form"),

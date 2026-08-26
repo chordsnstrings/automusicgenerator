@@ -70,6 +70,15 @@ SEED_CODEX: dict[str, Any] = {
         # Populated by the Archivist. Empty on day one and that is honest —
         # nothing has been observed yet.
         "style_scores": {},
+        # {family: {"mean": 7.4, "n": 12}}, and the n travels with the mean
+        # rather than being dropped on the way in. The live codex reached v3
+        # showing "no synths 6.11" with no sample count anywhere on the row,
+        # which is how an average over two decisions came to read as a finding.
+        # A genre label repeats by construction, so a number here will look
+        # solid long before it is, and the only defence is printing what it
+        # rests on everywhere it is printed at all.
+        "genre_scores": {},
+        "subgenre_scores": {},
         "bpm_scores": {},
         "avoid": [],
         "notes": [],
@@ -127,7 +136,11 @@ SEED_PERSONAS: list[dict[str, Any]] = [
 # scored. It is dropped where it is collected and again where it is rendered —
 # twice, because the live codex already holds two of them and a filter at the
 # tokeniser alone would still brief tomorrow's run from yesterday's table.
-NEGATION_PREFIXES = ("no ", "not ", "non-", "never ", "without ", "avoid ",
+#
+# "non-" is deliberately absent from the list. "non-quantised drums" and
+# "non-diegetic pad" name what a thing IS, by contrast, and they are scoreable;
+# the prefixes below all introduce something that is simply not there.
+NEGATION_PREFIXES = ("no ", "not ", "never ", "without ", "avoid ",
                      "minus ", "zero ", "free of ", "absent ", "lacking ")
 
 
@@ -135,6 +148,47 @@ def is_negation(token: str) -> bool:
     """Whether a style fragment states an absence rather than a characteristic."""
     tok = (token or "").strip().lower()
     return tok.startswith(NEGATION_PREFIXES) or tok.endswith(("-free", " free"))
+
+
+def _scored(entry: Any) -> tuple[float, int] | None:
+    """A genre score row as (mean, n), or None if it carries neither.
+
+    Tolerant because the body is JSON read back out of the database and a codex
+    written by an older deploy is still a valid codex — versions are never
+    rewritten in place, so every shape this key has ever had stays readable
+    forever. A bare number is one of those older shapes; it renders with n=0,
+    which is exactly what a mean with no sample count behind it is worth.
+    """
+    if isinstance(entry, dict):
+        mean, n = entry.get("mean"), entry.get("n")
+        if isinstance(mean, (int, float)):
+            return float(mean), int(n or 0)
+        return None
+    if isinstance(entry, (int, float)):
+        return float(entry), 0
+    return None
+
+
+def _genre_line(scores: Any, label: str, limit: int = 8) -> str | None:
+    """One prompt line of genre scores, each printed with what it rests on.
+
+    The sample count is not decoration and is not optional. director.py tells
+    the model that a learned observation beats its priors, so a number arriving
+    without its n is a number the model has no way to discount — and a genre
+    label, unlike a prose fragment, repeats by construction and will reach a
+    confident-looking average from a handful of days.
+    """
+    rows = []
+    for key, entry in (scores or {}).items():
+        pair = _scored(entry)
+        if pair:
+            rows.append((key, *pair))
+    if not rows:
+        return None
+    rows.sort(key=lambda r: -r[1])
+    return f"{label}: " + ", ".join(
+        f"{k} {mean:.1f} over {n} rated brief{'' if n == 1 else 's'}"
+        for k, mean, n in rows[:limit])
 
 
 @dataclass(slots=True)
@@ -196,6 +250,12 @@ class Codex:
         if scored:
             top = sorted(scored.items(), key=lambda kv: -kv[1])[:8]
             parts.append("observed to score well: " + ", ".join(f"{k} ({v:.1f})" for k, v in top))
+        for line in (_genre_line(learned.get("genre_scores"),
+                                 "genre observed, your ratings over distinct briefs"),
+                     _genre_line(learned.get("subgenre_scores"),
+                                 "specific genres observed", limit=6)):
+            if line:
+                parts.append(line)
         avoid = [k for k in (learned.get("avoid") or []) if not is_negation(k)]
         if avoid:
             parts.append("observed to fail, avoid: " + ", ".join(avoid[:10]))

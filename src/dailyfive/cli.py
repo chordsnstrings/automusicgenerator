@@ -445,6 +445,14 @@ def cmd_strip_wav(args) -> int:
     return 0
 
 
+def cmd_restamp(args) -> int:
+    """Bring stored files onto the current retention window."""
+    from .retention import restamp
+    init_db()
+    print(json.dumps(restamp(dry_run=args.dry_run), indent=2, default=str))
+    return 0
+
+
 def cmd_credits(args) -> int:
     from .providers.suno import SunoClient
     print(f"suno credits: {SunoClient().credits()}")
@@ -665,6 +673,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--pause", type=float, default=4.0,
                    help="seconds between files; the cluster is 1 vCPU")
     s.set_defaults(fn=cmd_strip_wav)
+
+    s = sub.add_parser("restamp", help="apply the current retention window to stored files")
+    s.add_argument("--dry-run", action="store_true")
+    s.set_defaults(fn=cmd_restamp)
 
     s = sub.add_parser("init-db", help="create tables and seed the codex")
     s.set_defaults(fn=cmd_initdb)
