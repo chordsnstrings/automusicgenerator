@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import mimetypes
+import shutil
 from pathlib import Path
 
 import boto3
@@ -22,6 +23,79 @@ from .errors import ProviderError
 log = logging.getLogger(__name__)
 
 PROVIDER = "spaces"
+
+
+class LocalStore:
+    """Filesystem stand-in for Spaces, used when no bucket is configured.
+
+    The point is that a run should be possible before DigitalOcean is set up.
+    It mirrors the Spaces interface exactly — same keys, same layout — so the
+    day a bucket appears, nothing above this changes and yesterday's folders
+    can be copied up untouched.
+
+    It is not a substitute for the real thing: the whole reason Spaces exists in
+    this design is that Suno deletes its own copies after 15 days, and a local
+    directory on an ephemeral droplet is no safer than that.
+    """
+
+    def __init__(self, root: Path | str | None = None):
+        cfg = settings()
+        self.root = Path(root or (cfg.work_dir / "delivered")).expanduser()
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.bucket = str(self.root)
+        self.prefix = cfg.spaces_prefix
+        self.public_index = True
+
+    def key_for(self, run_date: str, *parts: str) -> str:
+        return "/".join([self.prefix, run_date, *[p.strip("/") for p in parts if p]])
+
+    def _path(self, key: str) -> Path:
+        path = self.root / key
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def upload(self, local: Path | str, key: str, *, public: bool = False) -> str:
+        local = Path(local)
+        if not local.is_file():
+            raise ProviderError("local", f"nothing to upload at {local}", retryable=False)
+        shutil.copy2(local, self._path(key))
+        log.info("stored %s -> %s", local.name, key)
+        return key
+
+    def put_text(self, body: str, key: str, *, content_type: str = "application/json",
+                 public: bool = False) -> str:
+        self._path(key).write_text(body, encoding="utf-8")
+        return key
+
+    def signed_url(self, key: str, *, expires: int = 0) -> str:
+        # A file:// URL so the delivered index page still plays locally.
+        return (self.root / key).resolve().as_uri()
+
+    def exists(self, key: str) -> bool:
+        return (self.root / key).is_file()
+
+    def check_access(self) -> None:
+        probe = self.root / ".write-probe"
+        try:
+            probe.write_text("ok")
+            probe.unlink()
+        except OSError as exc:
+            raise ProviderError("local", f"cannot write to {self.root}: {exc}",
+                                retryable=False) from exc
+
+
+def open_store():
+    """Spaces when it is configured, the filesystem when it is not.
+
+    Chosen once per run so the whole run agrees about where things went.
+    """
+    cfg = settings()
+    if cfg.spaces_bucket and cfg.spaces_key and cfg.spaces_secret:
+        return Spaces()
+    log.warning("no Spaces bucket configured — delivering to %s instead. "
+                "Suno deletes its own copies after 15 days, so set SPACES_* "
+                "before this matters.", cfg.work_dir / "delivered")
+    return LocalStore()
 
 
 class Spaces:

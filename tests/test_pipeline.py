@@ -16,11 +16,13 @@ def test_phase_ordering():
 
 
 def test_preflight_reports_every_problem_at_once():
+    """One error listing four problems beats four runs each dying on the next."""
     problems = pl.preflight(require_ffmpeg=True)
     assert len(problems) >= 2
     joined = " ".join(problems)
-    assert "SUNO_API_KEY" in joined
-    assert "personas" in joined
+    assert "SUNO_API_KEY" in joined, "a missing Suno key must be named"
+    assert "personas" in joined, "an unregistered cast must be named"
+    assert "SPACES_" in joined, "delivering to the filesystem must be flagged"
 
 
 def test_opening_the_same_date_twice_resumes_rather_than_duplicating():
@@ -127,3 +129,44 @@ def test_no_shortfall_note_when_every_lane_fills(run_id):
     pl._record_shortfall(run_id, picks, cfg)
     with session_scope() as s:
         assert not (s.get(Run, run_id).notes or {}).get("shortfall")
+
+
+def test_delivery_falls_back_to_the_filesystem_without_a_bucket(monkeypatch, tmp_path):
+    """A first run must be possible before DigitalOcean is set up."""
+    from dailyfive.config import reload_settings
+    from dailyfive.storage import LocalStore, open_store
+    for var in ("SPACES_KEY", "SPACES_SECRET", "SPACES_BUCKET"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("WORK_DIR", str(tmp_path))
+    reload_settings()
+
+    store = open_store()
+    assert isinstance(store, LocalStore)
+    store.check_access()
+
+    key = store.key_for("2026-08-27", "01_slug", "meta.json")
+    assert key == "songs/2026-08-27/01_slug/meta.json"
+    store.put_text('{"ok":true}', key)
+    assert store.exists(key)
+    assert store.signed_url(key).startswith("file://")
+
+
+def test_a_configured_bucket_still_wins(monkeypatch):
+    from dailyfive.config import reload_settings
+    from dailyfive.storage import open_store
+    monkeypatch.setenv("SPACES_KEY", "k")
+    monkeypatch.setenv("SPACES_SECRET", "s")
+    monkeypatch.setenv("SPACES_BUCKET", "b")
+    monkeypatch.setenv("SPACES_ENDPOINT", "https://nyc3.digitaloceanspaces.com")
+    reload_settings()
+    assert type(open_store()).__name__ == "Spaces"
+
+
+def test_local_and_spaces_agree_on_key_layout(monkeypatch, tmp_path):
+    """Same keys either way, so a local run can be copied up untouched."""
+    from dailyfive.config import reload_settings
+    from dailyfive.storage import LocalStore
+    monkeypatch.setenv("WORK_DIR", str(tmp_path))
+    reload_settings()
+    assert LocalStore().key_for("2026-08-27", "manifest.json") == \
+        "songs/2026-08-27/manifest.json"

@@ -138,7 +138,7 @@ def wired(monkeypatch, tmp_path):
     fake_suno = FakeSuno()
     fake_spaces = FakeSpaces()
     monkeypatch.setattr(pl, "SunoClient", lambda *a, **kw: fake_suno)
-    monkeypatch.setattr(pl, "Spaces", lambda *a, **kw: fake_spaces)
+    monkeypatch.setattr(pl, "open_store", lambda *a, **kw: fake_spaces)
     monkeypatch.setattr("dailyfive.conductor.SunoClient", lambda *a, **kw: fake_suno)
 
     # Mirroring: write a plausible file instead of fetching one.

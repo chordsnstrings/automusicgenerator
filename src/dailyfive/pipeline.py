@@ -31,7 +31,7 @@ from .packager import (build_meta, cover_art, encode_mp3, master_wav, slugify,
                        tag_mp3, write_lrc)
 from .providers.suno import SunoClient
 from .qc import FFmpegMissing, have_ffmpeg, measure, verdict
-from .storage import Spaces
+from .storage import Spaces, open_store
 from .web.templates import day_page
 
 log = logging.getLogger(__name__)
@@ -47,8 +47,7 @@ def preflight(*, require_ffmpeg: bool = True) -> list[str]:
     problems: list[str] = []
 
     try:
-        cfg.require("suno_api_key", "spaces_key", "spaces_secret", "spaces_bucket",
-                    "spaces_endpoint", "public_base_url")
+        cfg.require("suno_api_key", "public_base_url")
     except ConfigError as exc:
         problems.append(str(exc))
 
@@ -77,13 +76,20 @@ def preflight(*, require_ffmpeg: bool = True) -> list[str]:
 
     if not problems:
         try:
-            Spaces().check_access()
+            open_store().check_access()
         except Exception as exc:
-            problems.append(f"Spaces unreachable: {exc}")
+            problems.append(f"delivery target unreachable: {exc}")
         try:
             SunoClient().credits()
         except Exception as exc:
             problems.append(f"Suno unreachable: {exc}")
+
+    if not (cfg.spaces_bucket and cfg.spaces_key):
+        problems.append(
+            "SPACES_* not set — songs will be delivered to "
+            f"{cfg.work_dir / 'delivered'} instead. Fine for a first run; not a "
+            "place to keep a catalogue, since Suno deletes its own copies after "
+            "15 days.")
 
     ready = codex.current().personas_ready()
     if not ready:
@@ -401,7 +407,7 @@ def _record_shortfall(run_id: int, picks: list[dict], cfg) -> None:
 
 
 def _phase_ship(run_id: int, cfg, *, skip_art: bool = False) -> RunPhase:
-    spaces = Spaces()
+    spaces = open_store()
     client = SunoClient()
     cond = Conductor(run_id, client=client)
     work = Path(cfg.work_dir) / str(run_id) / "master"

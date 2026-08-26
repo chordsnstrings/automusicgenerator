@@ -180,8 +180,16 @@ def settings() -> Settings:
 
 
 def reload_settings() -> Settings:
-    """Re-read the environment. Used by tests; never called during a run."""
+    """Re-read the environment and rebuild Settings.
+
+    Deliberately does NOT pass ``override=True`` to dotenv. The caller's whole
+    reason for reloading is that it just changed an environment variable — a
+    .env file that overrode that change would silently defeat the call, which
+    is exactly what happened the first time a real .env existed beside the
+    tests: every monkeypatched DATABASE_URL was replaced by the real one and
+    the suite started sharing a single database.
+    """
     global _settings
-    load_dotenv(override=True)
+    load_dotenv()
     _settings = Settings()
     return _settings
