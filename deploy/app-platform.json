@@ -55,7 +55,7 @@
         },
         {
           "key": "DB_DISK_GB",
-          "value": "",
+          "value": "30",
           "scope": "RUN_AND_BUILD_TIME"
         },
         {
@@ -185,7 +185,7 @@
         },
         {
           "key": "DB_DISK_GB",
-          "value": "",
+          "value": "30",
           "scope": "RUN_AND_BUILD_TIME"
         },
         {
