@@ -1,16 +1,19 @@
 #cloud-config
-# Base provisioning for The Daily Five. Everything here is idempotent and
-# machine-readable on purpose: a droplet you can rebuild from a file is one you
-# can recover; a droplet configured by hand is one you cannot.
+# Self-provisioning for The Daily Five.
+#
+# Two things here are deliberate and were learned the hard way. nginx comes up
+# and starts serving a status page *before* anything else is attempted, because
+# a box you cannot see into is a box you cannot debug — the first build failed
+# silently and there was no way to ask it why without SSH. And the migration
+# step retries, because the database firewall is opened by tag at roughly the
+# same moment the droplet boots, and losing that race must not be fatal.
 package_update: true
-package_upgrade: true
-
 packages:
   - python3
   - python3-venv
   - python3-pip
-  - ffmpeg                 # QC measurement and MP3 encoding both depend on this
-  - postgresql-client      # for pg_dump backups against the managed cluster
+  - ffmpeg
+  - postgresql-client
   - nginx
   - certbot
   - python3-certbot-nginx
@@ -21,30 +24,115 @@ packages:
 
 users:
   - name: dailyfive
-    system: false
     shell: /bin/bash
-    sudo: false            # the service account never needs root
     lock_passwd: true
 
 write_files:
-  - path: /etc/sysctl.d/99-dailyfive.conf
-    content: |
-      # A single small droplet running one daily job — keep the network stack
-      # boring and the OOM killer away from the worker.
-      vm.overcommit_memory = 1
-      net.ipv4.tcp_syncookies = 1
   - path: /etc/systemd/journald.conf.d/dailyfive.conf
     content: |
       [Journal]
-      # Logs are the only record of an unattended run that went wrong.
       SystemMaxUse=512M
       MaxRetentionSec=30day
 
+  - path: /etc/nginx/sites-available/dailyfive
+    content: |
+      server {
+          listen 80 default_server;
+          server_name _;
+          client_max_body_size 4m;
+
+          # Served straight off disk so it answers even when the app is down —
+          # this is the page that tells you why the app is down.
+          location = /bootstrap { alias /var/www/html/bootstrap.log; default_type text/plain; }
+
+          location ~ ^/webhooks/ {
+              access_log off;
+              proxy_pass http://127.0.0.1:8080;
+              proxy_set_header Host $host;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_read_timeout 15s;
+          }
+
+          # Audio streams out of Postgres and the player issues ranged requests
+          # to seek; buffering the response would break scrubbing.
+          location /files/ {
+              proxy_pass http://127.0.0.1:8080;
+              proxy_set_header Host $host;
+              proxy_set_header Range $http_range;
+              proxy_set_header If-Range $http_if_range;
+              proxy_buffering off;
+              proxy_read_timeout 300s;
+          }
+
+          location / {
+              proxy_pass http://127.0.0.1:8080;
+              proxy_set_header Host $host;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+          }
+      }
+
+  - path: /opt/dailyfive/bootstrap.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      # No `set -e`: a failure here must be reported, not vanish.
+      APP=/opt/dailyfive
+      BRANCH=claude/ai-music-generation-agent-t1tyny
+      LOG=/var/www/html/bootstrap.log
+      mkdir -p /var/www/html "$APP/work"
+      say() { echo "[$(date -u +%H:%M:%S)] $*" | tee -a "$LOG"; }
+      exec 2>> "$LOG"
+
+      say "bootstrap starting"
+
+      # Serve the status page before attempting anything that can fail.
+      ln -sf /etc/nginx/sites-available/dailyfive /etc/nginx/sites-enabled/dailyfive
+      rm -f /etc/nginx/sites-enabled/default
+      nginx -t >>"$LOG" 2>&1 && systemctl restart nginx && say "nginx up"
+
+      IP=$(curl -s --max-time 10 http://169.254.169.254/metadata/v1/interfaces/public/0/ipv4/address)
+      [ -n "$IP" ] && sed -i "s|^PUBLIC_BASE_URL=.*|PUBLIC_BASE_URL=http://$IP|" "$APP/.env" \
+        && say "public base url -> http://$IP"
+
+      say "cloning $BRANCH"
+      git clone --branch "$BRANCH" --depth 1 \
+        https://github.com/chordsnstrings/automusicgenerator.git "$APP/current" >>"$LOG" 2>&1 \
+        && say "clone ok" || { say "CLONE FAILED"; exit 1; }
+
+      say "installing"
+      python3 -m venv "$APP/venv" >>"$LOG" 2>&1
+      "$APP/venv/bin/pip" install --quiet --upgrade pip wheel >>"$LOG" 2>&1
+      "$APP/venv/bin/pip" install --quiet -e "$APP/current[postgres]" >>"$LOG" 2>&1 \
+        && say "install ok" || { say "PIP INSTALL FAILED"; exit 1; }
+
+      chown -R dailyfive:dailyfive "$APP"
+      chmod 600 "$APP/.env"
+
+      # The database firewall is opened by tag as the droplet boots, so the
+      # first attempt can legitimately lose that race.
+      cd "$APP/current"
+      for attempt in 1 2 3 4 5 6; do
+        say "migrate attempt $attempt"
+        if sudo -u dailyfive env $(grep -v '^#' "$APP/.env" | grep -v '^$' | xargs -d '\n') \
+             "$APP/venv/bin/dailyfive" migrate >>"$LOG" 2>&1; then
+          say "migrations applied"; break
+        fi
+        [ "$attempt" = 6 ] && { say "MIGRATE FAILED after 6 attempts"; exit 1; }
+        sleep 20
+      done
+
+      cp "$APP"/current/deploy/dailyfive-*.service /etc/systemd/system/ 2>/dev/null
+      cp "$APP"/current/deploy/dailyfive-*.timer /etc/systemd/system/ 2>/dev/null
+      systemctl daemon-reload
+      for u in dailyfive-web.service dailyfive-run.timer dailyfive-purge.timer dailyfive-backup.timer; do
+        systemctl enable --now "$u" >>"$LOG" 2>&1 && say "enabled $u" || say "FAILED to enable $u"
+      done
+
+      sleep 5
+      curl -sf localhost:8080/health >>"$LOG" 2>&1 && say "BOOTSTRAP COMPLETE" || say "app not answering yet"
+
 runcmd:
-  - [ mkdir, -p, /opt/dailyfive/work, /opt/dailyfive/releases ]
-  - [ chown, -R, "dailyfive:dailyfive", /opt/dailyfive ]
-  - [ sysctl, --system ]
-  # Only SSH and HTTP(S) — Postgres is reached over the private network.
   - [ ufw, default, deny, incoming ]
   - [ ufw, default, allow, outgoing ]
   - [ ufw, allow, OpenSSH ]
@@ -53,4 +141,4 @@ runcmd:
   - [ ufw, --force, enable ]
   - [ systemctl, enable, --now, fail2ban ]
   - [ systemctl, restart, systemd-journald ]
-  - [ bash, -lc, "echo 'dailyfive base provisioning complete' > /var/log/dailyfive-cloud-init.done" ]
+  - [ bash, /opt/dailyfive/bootstrap.sh ]
