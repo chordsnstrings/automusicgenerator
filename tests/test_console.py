@@ -167,14 +167,65 @@ def test_the_files_page_plays_every_shipped_song(client, delivered):
         "the old dead text advertised files it never linked to"
 
 
-def test_a_shipped_song_whose_bytes_have_expired_says_so(client, populated):
+def test_a_shipped_song_whose_bytes_have_expired_says_so(client, populated,
+                                                        monkeypatch):
     """Retention deletes on expires_at alone and never touches clips, so a
-    shipped song outliving its audio is the expected state, not an error."""
+    shipped song outliving its audio is the expected state, not an error.
+
+    Pinned to the database store: that is the only configuration in which a
+    clip with no row means the audio is gone rather than somewhere else.
+    """
+    monkeypatch.setenv("AUDIO_STORE", "database")
+    reload_settings()
     r = client.get("/files")
     assert r.status_code == 200
     assert "<audio controls" not in r.text
     assert 'src="/files/' not in r.text
     assert "no audio kept" in r.text
+
+
+def test_a_store_the_console_cannot_read_says_so_rather_than_no_audio_kept(
+        client, populated, monkeypatch):
+    """LocalStore addresses files as file:// paths, which a page served over
+    HTTP cannot load. Saying "no audio kept" there asserts something false: the
+    bytes exist, this console just cannot hand them out."""
+    monkeypatch.setenv("AUDIO_STORE", "local")
+    reload_settings()
+    body = client.get("/files").text
+    assert "no audio kept" not in body
+    assert "not served from here" in body
+    assert "AUDIO_STORE=database" in body, "an operator needs to know what to change"
+    assert "this is where you listen to it" not in body
+    assert "file://" not in body
+
+
+def test_spaces_is_played_through_a_signed_url(client, populated, monkeypatch):
+    """The storage the README describes. Its objects are private, so a bare key
+    is a 403 — but signing one costs no round trip, so the console can offer a
+    player for a catalogue it does not itself hold."""
+    for var, val in (("AUDIO_STORE", "spaces"), ("SPACES_KEY", "k"),
+                     ("SPACES_SECRET", "s"), ("SPACES_BUCKET", "daily-five"),
+                     ("SPACES_ENDPOINT", "https://fra1.digitaloceanspaces.com")):
+        monkeypatch.setenv(var, val)
+    reload_settings()
+    body = client.get("/files").text
+    assert "<audio controls" in body
+    assert "no audio kept" not in body
+    assert "songs/2026-08-27/01_slow-burn/master.mp3?" in body
+    assert "X-Amz-Signature=" in body
+    assert "&amp;" in body, "a query string in an attribute has to be escaped"
+    assert "as delivered" in body, "the day page the pipeline wrote is up there too"
+
+
+def test_a_page_you_glance_at_shows_a_duration_before_you_press_play(client, delivered):
+    """preload="metadata" is what makes the transport read 3:16 instead of
+    0:00 / 0:00. The two bounded pages can afford it per song; the catalogue,
+    capped at three hundred rows, would be opening three hundred sources."""
+    assert 'preload="metadata"' in client.get("/").text
+    assert 'preload="metadata"' in client.get("/runs/2026-08-27").text
+    catalogue = client.get("/files").text
+    assert 'preload="none"' in catalogue
+    assert 'preload="metadata"' not in catalogue
 
 
 def test_the_overview_offers_todays_songs_with_a_rating_control(client, delivered):

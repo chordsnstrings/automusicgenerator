@@ -69,12 +69,14 @@ th.num{text-align:right}
 td.w{max-width:26rem;white-space:normal;color:var(--dim);line-height:1.45}
 td.tight{white-space:nowrap}
 /* Browser-drawn <audio> controls take their palette from color-scheme above and
-   nothing else. Width is set deliberately rather than 100%: inside td padding a
-   full-width player fights the column algorithm, and Chrome sheds the volume
-   slider and the timer as the element narrows, so this is the width at which a
-   row still gets a scrub bar. */
+   nothing else. Chrome sheds the timer, then the scrub bar, then the play
+   button itself as the element narrows — at 44px, which is what a phone-width
+   table gives it, nothing is drawn at all. So the width is a floor rather than
+   a preference, and the table is allowed to scroll instead. */
 audio{max-width:100%;vertical-align:middle}
-td audio{width:15rem;height:2rem}
+td audio{width:15rem;min-width:15rem;max-width:none;height:2rem}
+.tw{overflow-x:auto}
+.tw table{width:auto;min-width:100%}
 .song{background:var(--card);border:1px solid var(--rule);border-radius:4px;
       padding:.9rem 1rem}
 .song .ttl{font-weight:700;letter-spacing:-.01em}
@@ -177,7 +179,11 @@ def table(headers: list[str], rows: list[list[str]], *, empty: str = "nothing he
                    for i, h in enumerate(headers))
     body = "".join(
         "<tr>" + "".join(f"<td>{c}</td>" for c in row) + "</tr>" for row in rows)
-    return f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+    # Wrapped so a table that cannot fit scrolls inside its own box. Without it
+    # a single wide cell — a player has a floor it will not go below — pushes
+    # the whole page sideways, and the nav goes with it.
+    return (f'<div class="tw"><table><thead><tr>{head}</tr></thead>'
+            f"<tbody>{body}</tbody></table></div>")
 
 
 def ago(when: datetime | None) -> str:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
 from datetime import date, timedelta
 
 from sqlalchemy import func, select
@@ -15,6 +17,8 @@ from ..models import (AgentCall, Brief, Clip, CodexVersion, Decision, Job,
                       Outcome, Run, RunPhase, Signal, StoredFile, utcnow)
 from .console import (RATE_JS, ago, bar, dur, esc, jsonblock, ms, page, pill,
                       stats, table)
+
+log = logging.getLogger(__name__)
 
 PHASES = [RunPhase.SENSED, RunPhase.BRIEFED, RunPhase.WRITTEN, RunPhase.SUBMITTED,
           RunPhase.RENDERED, RunPhase.JUDGED, RunPhase.SHIPPED]
@@ -57,6 +61,14 @@ ROSTER = [
 FILE_LABELS = [("master.mp3", "MP3"), ("master.wav", "WAV"), ("cover.jpg", "Cover"),
                ("lyrics.txt", "Lyrics"), ("lyrics.lrc", "LRC"), ("meta.json", "Meta")]
 
+# The names the ship loop writes for every clip it delivers. Cover art is
+# skippable and can fail, so it is the one basename nothing may assume.
+ALWAYS_SHIPPED = ("master.mp3", "master.wav", "lyrics.txt", "lyrics.lrc", "meta.json")
+
+# What a row says when there is nothing behind it, which is two different facts.
+GONE = ("no audio kept", "no files kept")
+OFFSITE = ("not served from here", "not served from here")
+
 
 def _unexpired():
     """The read path in app.py 404s an expired row, so anything the console
@@ -87,14 +99,72 @@ def _ratings(s, clip_ids: list[int]) -> dict[int, int]:
         .where(Outcome.clip_id.in_(clip_ids), Outcome.rating.isnot(None))).all()}
 
 
-def _day_pages(s, spaces_keys: list[str]) -> dict[str, str]:
-    """{day folder: its index.html key}, only where the row actually exists.
+OFFSITE_NOTE = (
+    '<div class="note"><span>where the audio is</span>'
+    "The delivered files went to a store this console cannot read back — a "
+    "local directory is a path on a disk, not a URL a browser will follow. "
+    "AUDIO_STORE=database is what puts the bytes behind /files, and a player on "
+    "this page.</div>")
+
+
+def _elsewhere() -> tuple[Callable[[str], str] | None, tuple[str, str], str]:
+    """How to reach a shipped clip whose bytes are not rows in this database.
+
+    Three stores write the same layout and they are not equally readable from a
+    browser. Under the database store there is nothing to reach: a clip with no
+    row was collected by the purge, and the audio really is gone. Spaces can
+    sign an ordinary HTTPS URL for any key without a round trip, so an operator
+    on the storage the README describes gets a working player rather than a page
+    of rows claiming nothing was kept. LocalStore hands out file:// paths, which
+    a page served over HTTP cannot load at all — that one has to say so.
+
+    Returns (sign, absent, note): a signer or None, the pair of phrases a row
+    with nothing behind it prints, and a page-level explanation or "".
+    """
+    cfg = settings()
+    if cfg.audio_store == "database":
+        return None, GONE, ""
+    from ..storage import open_store   # boto3, and only this branch needs it
+    try:
+        store = open_store()
+        # Probed rather than type-checked: the only thing that matters is
+        # whether the address it hands out is one a browser will follow.
+        probe = store.signed_url("probe")
+    except Exception as exc:
+        log.warning("cannot address the delivery store from the console: %s", exc)
+        probe = ""
+    if probe.startswith(("http://", "https://")):
+        return store.signed_url, GONE, ""
+    return None, OFFSITE, OFFSITE_NOTE
+
+
+def _hrefs(s, clips: list[Clip], sign: Callable | None) -> dict[int, dict[str, str]]:
+    """{clip_id: {basename: href}}, unescaped — a signed URL carries a query.
+
+    A row in stored_files wins wherever there is one: it is checked, and it
+    survives a change of backend. A clip with none is addressed in the store the
+    run shipped to, and only for the names that store always holds. Signing is
+    local arithmetic but not free, so it is done for those clips and no others.
+    """
+    out = {cid: {name: f"/files/{key}" for name, key in got.items()}
+           for cid, got in _files_for(s, [c.id for c in clips]).items()}
+    if sign is None:
+        return out
+    for c in clips:
+        if c.id not in out and c.spaces_key:
+            out[c.id] = {n: sign(f"{c.spaces_key}/{n}") for n in ALWAYS_SHIPPED}
+    return out
+
+
+def _day_pages(s, spaces_keys: list[str],
+               sign: Callable | None) -> dict[str, str]:
+    """{day folder: an href to its index.html}.
 
     The folder comes from the clip's own key rather than from SPACES_PREFIX and
-    the date, so a day that shipped under a different prefix still resolves. And
-    it is checked rather than assumed, because under Spaces that artifact is
-    private and under LocalStore it is a path on a disk — a constructed href is
-    a 404 in two of the three configurations.
+    the date, so a day that shipped under a different prefix still resolves. A
+    row is proof the file is there; without one the page is only reachable if
+    the store the run shipped to can be addressed at all, which is what ``sign``
+    answers — an unsigned guess is a 404 under two of the three stores.
     """
     folders = {k.rsplit("/", 1)[0] for k in spaces_keys if k and "/" in k}
     if not folders:
@@ -103,31 +173,36 @@ def _day_pages(s, spaces_keys: list[str]) -> dict[str, str]:
     found = s.execute(select(StoredFile.key)
                       .where(StoredFile.key.in_(list(candidates)),
                              _unexpired())).scalars().all()
-    return {candidates[k]: k for k in found}
+    out = {candidates[k]: f"/files/{k}" for k in found}
+    if sign is not None:
+        for key, folder in candidates.items():
+            out.setdefault(folder, sign(key))
+    return out
 
 
-def _player(files: dict[str, str]) -> str:
-    """The MP3, never the WAV — same music, a seventh of the bytes, and this
-    page can list three hundred of them."""
-    key = files.get("master.mp3")
-    if not key:
-        # Stated absence rather than a cause: the bytes are equally missing when
-        # retention collected them and when the run shipped to Spaces or a local
-        # disk, and only one of those is an expiry.
-        return '<span class="mini">no audio kept</span>'
-    # preload="none" where the day page uses "metadata": that page has five
-    # cards, this one can have three hundred, and "metadata" would open three
-    # hundred sources before anyone pressed play.
-    return f'<audio controls preload="none" src="/files/{esc(key)}"></audio>'
+def _player(files: dict[str, str], absent: str, *, preload: str) -> str:
+    """The MP3, never the WAV — same music, a seventh of the bytes.
+
+    ``preload`` is the caller's because the right answer differs by page, and
+    templates.py settled why: "metadata" costs a few KB per track and is what
+    makes the transport show a real duration instead of 0:00 / 0:00, which is
+    what a page you glance at needs. A listing bounded at one day of songs can
+    afford it. The full catalogue cannot — that is three hundred sources opened
+    before anyone presses play.
+    """
+    href = files.get("master.mp3")
+    if not href:
+        return f'<span class="mini">{esc(absent)}</span>'
+    return f'<audio controls preload="{preload}" src="{esc(href)}"></audio>'
 
 
-def _links(files: dict[str, str]) -> str:
-    parts = [f'<a href="/files/{esc(key)}" download>{label}</a>'
-             for name, label in FILE_LABELS if (key := files.get(name))]
+def _links(files: dict[str, str], absent: str) -> str:
+    parts = [f'<a href="{esc(href)}" download>{label}</a>'
+             for name, label in FILE_LABELS if (href := files.get(name))]
     if not parts:
         # A shipped Clip outliving its bytes is normal, not an error: the purge
         # reads expires_at and never touches clips.
-        return '<span class="mini">no files kept</span>'
+        return f'<span class="mini">{esc(absent)}</span>'
     return f'<span class="mini">{" · ".join(parts)}</span>'
 
 
@@ -157,21 +232,22 @@ def _song_meta(c: Clip, persona: str | None) -> str:
 
 
 def _song_card(c: Clip, persona: str | None, files: dict[str, str],
-               rating: int | None, back: str) -> str:
+               absent: tuple[str, str], rating: int | None, back: str) -> str:
+    no_audio, no_files = absent
     return (f'<div class="song" id="clip{int(c.id)}">'
             f'<div class="ttl">{esc(c.title or "untitled")}</div>'
             f'<div class="mini">{_song_meta(c, persona)}</div>'
-            f'{_player(files)}'
-            f'<div>{_links(files)}</div>'
+            f'{_player(files, no_audio, preload="metadata")}'
+            f'<div>{_links(files, no_files)}</div>'
             f'{_rate(c.id, rating, back)}</div>')
 
 
-def _delivered_link(key: str | None) -> str:
+def _delivered_link(href: str | None) -> str:
     """The page the pipeline wrote into the day's folder — five players and the
     rating control, exactly as delivered. Nothing linked to it before."""
-    if not key:
+    if not href:
         return ""
-    return (f'<p class="sub"><a href="/files/{esc(key)}">the day page '
+    return (f'<p class="sub"><a href="{esc(href)}">the day page '
             f'as delivered</a></p>')
 
 
@@ -230,21 +306,22 @@ def _todays_songs(s) -> str:
     if not rows:
         return ""
 
-    ids = [c.id for c, _ in rows]
-    files = _files_for(s, ids)
-    ratings = _ratings(s, ids)
-    day_pages = _day_pages(s, [c.spaces_key for c, _ in rows])
-    folders = [c.spaces_key.rsplit("/", 1)[0] for c, _ in rows
+    clips = [c for c, _ in rows]
+    sign, absent, _note = _elsewhere()
+    files = _hrefs(s, clips, sign)
+    ratings = _ratings(s, [c.id for c in clips])
+    day_pages = _day_pages(s, [c.spaces_key for c in clips], sign)
+    folders = [c.spaces_key.rsplit("/", 1)[0] for c in clips
                if c.spaces_key and "/" in c.spaces_key]
-    index_key = next((day_pages[f] for f in folders if f in day_pages), None)
+    index_href = next((day_pages[f] for f in folders if f in day_pages), None)
 
     day = latest.isoformat()
     cards = "".join(
-        _song_card(c, persona, files.get(c.id, {}), ratings.get(c.id), "/")
+        _song_card(c, persona, files.get(c.id, {}), absent, ratings.get(c.id), "/")
         for c, persona in rows)
     return "".join([
         f'<h2>{esc(day)} — the latest set <a href="/runs/{esc(day)}">run</a>'
-        + (f' <a href="/files/{esc(index_key)}">as delivered</a>' if index_key else "")
+        + (f' <a href="{esc(index_href)}">as delivered</a>' if index_href else "")
         + "</h2>",
         f'<div class="grid2">{cards}</div>',
     ])
@@ -398,14 +475,16 @@ def run_detail(run_date: date) -> str | None:
             ])
 
         shipped_clips = [c for c in clips if c.shipped]
-        clip_files = _files_for(s, [c.id for c in shipped_clips])
-        day_pages = _day_pages(s, [c.spaces_key for c in shipped_clips])
+        sign, absent, _note = _elsewhere()
+        no_audio, no_files = absent
+        clip_files = _hrefs(s, shipped_clips, sign)
+        day_pages = _day_pages(s, [c.spaces_key for c in shipped_clips], sign)
         back = f"/runs/{run_date.isoformat()}"
         files = [[
             f'<b id="clip{int(c.id)}">{esc(c.title)}</b><br>'
             f'<span class="mini">{esc(c.spaces_key or "not uploaded")}</span>',
-            _player(clip_files.get(c.id, {})),
-            _links(clip_files.get(c.id, {})),
+            _player(clip_files.get(c.id, {}), no_audio, preload="metadata"),
+            _links(clip_files.get(c.id, {}), no_files),
             pill("wav ready", "ok") if c.wav_url else pill("mp3 only", "dim"),
             # c.outcome is already in the identity map from the clip_rows loop.
             _rate(c.id, c.outcome.rating if c.outcome else None, back),
@@ -649,10 +728,12 @@ def files_page() -> str:
             .join(Brief, Clip.brief_id == Brief.id)
             .where(Clip.shipped.is_(True))
             .order_by(Run.run_date.desc(), Clip.rank).limit(300)).all()
-        ids = [c.id for c, _, _ in rows_db]
-        files = _files_for(s, ids)
-        ratings = _ratings(s, ids)
-        day_pages = _day_pages(s, [c.spaces_key for c, _, _ in rows_db])
+        clips = [c for c, _, _ in rows_db]
+        sign, absent, store_note = _elsewhere()
+        no_audio, no_files = absent
+        files = _hrefs(s, clips, sign)
+        ratings = _ratings(s, [c.id for c in clips])
+        day_pages = _day_pages(s, [c.spaces_key for c in clips], sign)
 
     by_day: dict[str, list] = {}
     for clip, run_date, persona in rows_db:
@@ -672,25 +753,27 @@ def files_page() -> str:
                 pill(c.slot_type.value, "cool" if c.slot_type.value == "short" else "dim"),
                 esc(persona or "—"),
                 f'<span class="num">{dur(c.duration_s)}</span>',
-                _player(mine),
-                _links(mine),
+                _player(mine, no_audio, preload="none"),
+                _links(mine, no_files),
             ])
         folder = next((c.spaces_key.rsplit("/", 1)[0] for c, _ in entries
                        if c.spaces_key and "/" in c.spaces_key), None)
-        index_key = day_pages.get(folder)
+        index_href = day_pages.get(folder)
         heading = (f'<h2>{esc(day)} <a href="/runs/{esc(day)}">run</a>'
-                   + (f' <a href="/files/{esc(index_key)}">as delivered</a>'
-                      if index_key else "") + "</h2>")
+                   + (f' <a href="{esc(index_href)}">as delivered</a>'
+                      if index_href else "") + "</h2>")
         blocks += [heading,
                    table(["Song", "Slot", "Persona", "Length", "Listen", "Files"], rows)]
 
     prefix = f"{cfg.spaces_bucket or '<bucket>'}/{cfg.spaces_prefix}"
     return page("Files", "".join([
         "<h1>Delivered files</h1>",
-        '<p class="sub">Everything this studio has shipped, and this is where you '
-        'listen to it. One immutable dated folder per run, mirrored the moment the '
+        '<p class="sub">Everything this studio has shipped'
+        + ("." if store_note else ", and this is where you listen to it.")
+        + ' One immutable dated folder per run, mirrored the moment the '
         'bytes existed — Suno deletes its own copies after 15 days. Rating happens '
         'on the day\'s run page, where the set is small enough to judge.</p>',
+        store_note,
         f'<pre>spaces://{esc(prefix)}/YYYY-MM-DD/\n'
         f'├─ manifest.json\n├─ index.html          '
         f'<i>the rating page</i>\n'
