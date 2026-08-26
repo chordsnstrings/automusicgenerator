@@ -3,7 +3,7 @@
 An unattended pipeline that produces **five finished songs every day** — WAV, MP3,
 cover art and timestamped lyrics — into a dated folder on DigitalOcean Spaces.
 
-Status: **proposal, v0.1.** No code yet. This document is the thing to agree on first.
+Status: **v0.3 — design settled, no code yet.** All five open decisions answered.
 
 Visual version (diagrams, cost tables, roster): see the published architecture page
 linked from the PR/issue this branch came from.
@@ -83,9 +83,10 @@ audio is fine.
 
 ### Role detail
 
-- **Scout** — fuses trend feeds into one ranked signal sheet: rising sounds, tempo
+- **Scout** — fuses seven free feeds into one ranked signal sheet: rising sounds, tempo
   bands, sentiment clusters, phrases people are typing. Weights each source by how
-  leading it is. Out: `signals.json`, 8-12 ranked themes with evidence.
+  leading it is. Out: `signals.json`, 8-12 ranked themes with evidence. Source stack in
+  §7.
 - **Music Director** — owns the **Style Codex**: a versioned, checkable document of
   production specs (BPM bands, key/mode, song form, hook placement, drop timing,
   instrumentation palette, vocal register, mix reference). Also holds the **persona
@@ -106,13 +107,16 @@ audio is fine.
   asset to Spaces the moment it exists.
 - **QC Engineer** — true peak, integrated LUFS, real vs. requested duration, leading
   and trailing silence, dead-air ratio, DC offset, hard-clip count. Rejects on
-  thresholds; survivors normalised to -14 LUFS with a clean fade.
+  thresholds; survivors get a clean trim and fade. Loudness normalisation to -14 LUFS
+  is applied to the **MP3 only** — see §6.
 - **Producer** — three independent scoring passes (hook strength in the first seven
   seconds, vocal and mix quality, fit to today's trend sheet), then fills each slot
   from its own contest — three full-length, two short — and writes down why each
   rejection lost.
-- **Packager** — requests the true WAV, encodes 320kbps MP3, generates cover art,
-  writes ID3 tags and a timestamped `.lrc`, uploads the dated folder and manifest.
+- **Packager** — requests the true WAV, encodes 320kbps MP3, generates cover art at
+  3000x3000, writes ID3 tags and a timestamped `.lrc`, uploads the dated folder and
+  manifest. Emits the `distribution` block in every `meta.json` — schema present,
+  values null.
 - **Archivist** — one row per clip, shipped or not, joining brief, exact style string,
   every parameter, QC metrics, producer score and rejection reason.
 
@@ -219,16 +223,49 @@ spaces://<bucket>/songs/2026-08-27/
 ├─ manifest.json          # 5 entries: title, style, bpm, key, duration, checksums
 ├─ index.html             # 5 players + the rating control that closes the loop
 ├─ 01_slow-burn-in-june/
-│   ├─ master.wav         # Suno WAV, loudness-normalised to -14 LUFS
-│   ├─ master.mp3         # 320 kbps, ID3 tags + embedded cover
-│   ├─ cover.jpg          # 3000x3000, Seedream
+│   ├─ master.wav         # Suno WAV, trimmed and faded — deliberately NOT normalised
+│   ├─ master.mp3         # 320 kbps, -14 LUFS, ID3 tags + embedded cover
+│   ├─ cover.jpg          # 3000x3000, Seedream — the size every DSP accepts
 │   ├─ lyrics.txt
 │   ├─ lyrics.lrc         # timestamped, from Suno's aligned lyrics
-│   └─ meta.json          # brief, full style string, every parameter, QC metrics
+│   └─ meta.json          # brief, style string, parameters, QC metrics + distribution
 ├─ 02_… 03_… 04_… 05_…
 └─ _rejected/             # the 9 that did not ship, MP3 only, with reasons
     └─ rejects.json
 ```
+
+### The distribution block
+
+Every `meta.json` carries the fields a distributor will one day ask for. **All of them
+stay null.** Nothing in the pipeline fabricates an identifier it has no authority to
+issue — the schema is reserved so a back catalogue never needs migrating, not so it can
+be filled with plausible-looking guesses.
+
+```json
+"distribution": {
+  "isrc": null,            "iswc": null,          "upc": null,
+  "label": null,           "publisher": null,
+  "p_line": null,          "c_line": null,        "release_date": null,
+  "primary_artist": null,  "featured": [],        "writers": [],
+  "producers": [],         "splits": [],          "platform_ids": {},
+  "explicit": null,        "language": null,
+  "primary_genre": null,   "secondary_genre": null,   "territories": null
+}
+```
+
+Four of those — `primary_artist`, `language`, `explicit`, `primary_genre` — are already
+recorded elsewhere in the same file, in the persona and musical blocks. A future
+backfill is therefore a join over rows you already have, not a re-listen to a year of
+audio. That is the whole reason for reserving the shape now.
+
+**One thing this changes about the audio.** The WAV was originally specced normalised to
+-14 LUFS. That is right for an archive you listen to and slightly wrong for a delivery
+master: DSPs apply their own normalisation, and delivering pre-normalised discards a
+headroom decision that cannot be recovered. So the **WAV keeps its original level** —
+trimmed and faded only — and -14 LUFS goes on the MP3, which is the one you will
+actually play. QC still measures loudness on the raw file, since that is a rejection
+signal either way. Costs nothing, and it is the one choice here that would be genuinely
+irreversible across a back catalogue.
 
 ### Postgres — 8 tables
 
@@ -299,6 +336,37 @@ Character limits by model (enforced by the Compiler, not discovered at runtime):
 `style` 200 chars on V4 but 1000 on V4_5+; `prompt` 3000 on V4, 5000 on V4_5+;
 `title` 80-100. V5_5 additionally accepts an explicit `duration` of 10-360 seconds.
 
+### The Scout's free source stack
+
+Seven feeds, all free, all with real documented access. Ranked by how *leading* each is
+— that weighting is the Scout's whole job, because a chart position tells you what
+already happened.
+
+| Source | Gives you | Access | Lead |
+|---|---|---|---|
+| Google Trends RSS | daily trending searches by region — themes before they are songs | no auth, public feed | leading |
+| Reddit API | discourse and sentiment in music subs | free OAuth, 100 req/min | leading |
+| Genius API | hot songs, and the lyrical themes underneath them | free token | moderate |
+| YouTube Data API v3 | most-popular music chart per region | free, 10k units/day | moderate |
+| Last.fm API | top tracks plus tag drift — where a genre is moving | free key | lagging |
+| Deezer charts | chart positions, and BPM on the track objects | no auth | lagging |
+| Apple Music RSS | most-played, authoritative | no auth, no key | lagging |
+
+**Two traps that cost people weeks.** *Spotify is deliberately absent* — Audio Features,
+Audio Analysis, Recommendations, Related Artists and algorithmic playlist access were
+all withdrawn for new applications in late 2024, and most tutorials still assume they
+exist. *Google Trends means the RSS feed, not `pytrends`* — the scraper library is
+unofficial, aggressively rate-limited and breaks without notice.
+
+**What the free stack cannot do.** None of these is a TikTok velocity signal. On the
+free tier the Scout is much better at theme and sentiment than at sound velocity, and it
+is honest to build knowing that. Two things compensate: the Music Director carries the
+load on *sound*, working from construction principles rather than this week's chart; and
+the daily ratings become a trend feed of their own — thirty days in, 150 rated songs
+joined to exact style strings, calibrated to your taste and your actual output. Revisit
+paid feeds (Chartmetric/Soundcharts, ~$100-500/mo) only once there is evidence the Scout
+is the weak link.
+
 ### Estimated daily cost
 
 | Line | Per day | Est. USD/day |
@@ -318,41 +386,32 @@ the exact number in a minute.
 
 ---
 
-## 8. Decisions
+## 8. Decisions — all five settled
 
-### Taken
+**You rate the five each morning.** The rating control ships inside the day's delivered
+`index.html` and posts back to the same endpoint that already receives Suno's callbacks
+— one surface to secure, nothing new to run. Without it the system optimises for the
+Producer agent's opinion, which drifts because nothing ever contradicts it.
 
-**You rate the five each morning.** This is what makes the loop real. The rating
-control ships *inside* the day's delivered `index.html` and posts back to the same
-public endpoint that already receives Suno's callbacks — one surface to secure,
-nothing new to run. Without it the system optimises for the Producer agent's opinion,
-which drifts because nothing ever contradicts it.
+**Three full-length songs, two short-form cuts.** Briefs become typed, and surplus has
+to be sized per type — hence seven briefs rather than six. Short cuts set `duration` on
+V5_5 at 30-60s and are briefed differently: hook inside two seconds, built to loop, no
+intro.
 
-**Three full-length songs, two short-form cuts.** This makes briefs **typed**, and
-surplus has to be sized per type — hence seven briefs rather than six. Short-form cuts
-use `duration` on V5_5 at 30-60 seconds and are briefed differently: hook in the first
-two seconds, built to loop cleanly, no long intro. The Compiler sets `duration` only on
-those; full-length briefs let the model choose its own arrangement.
+**Two to three recurring personas.** The Style Codex holds a persona cast alongside its
+production specs; A&R assigns and rotates them. Bootstrap step: personas must be created
+from a seed generation before day one, with `personaId` stored in the codex.
+`voice_persona` is the axis that makes an act recognisable across releases.
 
-**Two to three recurring personas.** The Style Codex holds a **persona cast** as well
-as production specs — each act with a fixed voice, a sonic territory and a lane it
-stays in. A&R assigns one per brief and rotates so every act appears several times a
-week. Bootstrap step this adds: personas must be *created* before day one, from a seed
-generation each, with their `personaId` stored in the codex. Suno offers both
-`style_persona` and `voice_persona` — voice is the one that makes an act recognisable
-across releases.
+**Free trend sources.** Seven feeds with real documented access — see §7 for the stack,
+the two traps, and the honest limits. Revisit paid feeds only once there is evidence the
+Scout is the weak link.
 
-### Still open
-
-1. **Which trend sources are worth paying for?** Free gets YouTube trending, Google
-   Trends, Reddit, public charts — decent but lagging. Chartmetric/Soundcharts give
-   real TikTok and Shazam velocity for ~$100-500/month.
-   *Recommend: start free — with daily ratings closing the loop, you will know within a
-   month whether the Scout is the weak link.*
-2. **Does this ever publish, or only archive?** Distribution later changes what
-   Packager writes today (ISRCs, split sheets, platform artwork sizes) and is much
-   cheaper to design in now than to retrofit across a back catalogue.
-   *Recommend: archive-only now, distribution-ready metadata from day 1.*
+**Distribution-ready schema, empty values.** The `distribution` block exists in every
+`meta.json` with every field null — see §6. Reserving the shape costs one JSON literal
+today; retrofitting it across a year of releases means touching 1,825 folders. It also
+surfaced the one genuinely irreversible audio choice in the design: the WAV now ships
+un-normalised as a true delivery master.
 
 ## 9. Build order
 

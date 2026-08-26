@@ -13,11 +13,11 @@ feedback loop that makes tomorrow's run different from today's.
 3 short                      ~3 cut                    6 held as reference
 ```
 
-**Status: proposal, v0.1. No code yet.**
+**Status: v0.3 — design settled, no code yet.** All five open decisions answered.
 
 Read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) first — it carries the agent
-roster, the flow and state diagrams, the storage layout, provider assignment, cost
-estimates, and the five open decisions that need answering before implementation.
+roster, the flow and state diagrams, the storage layout, provider assignment, the
+Scout's free source stack, cost estimates, and the five settled decisions.
 
 ## Stack
 
@@ -28,6 +28,7 @@ estimates, and the five open decisions that need answering before implementation
 | Cover art | BytePlus ModelArk (Seedream) |
 | Reasoning agents | Claude |
 | Audio QC + mastering | ffmpeg / librosa — no LLM |
+| Trend signal | 7 free feeds — YouTube, Apple RSS, Deezer, Last.fm, Google Trends RSS, Reddit, Genius |
 | Storage | DigitalOcean Spaces (S3-compatible) |
 | State | Postgres |
 | Host | one small DigitalOcean droplet + cron + webhook endpoint |
