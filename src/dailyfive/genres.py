@@ -268,6 +268,21 @@ DEEZER_GENRE_IDS: dict[str, str] = {
     "169": "r-and-b",        # Soul & Funk
     "71": "latin",           # Cumbia
     "197": "latin",          # Latin Music
+    # Album objects carry sub-genres that the 28-entry /genre list does not
+    # contain, and /genre/{id} returns no parent link, so the rollup is done
+    # here by hand from ids observed on real chart albums. Anything not listed
+    # is counted as unrecognised rather than guessed at, which is what makes a
+    # missing row visible instead of silent.
+    "86": "pop",             # Indie Pop
+    "87": "rock",            # Indie Rock
+    "111": "electronic",     # Techno/House
+    "134": "pop",            # International Pop
+    "522": "folk",           # Singer & Songwriter — same call as Apple's id 10
+    # "Indie Pop/Folk" is the one a reader will argue with, since 86 above is
+    # already Indie Pop. Folk is the word that distinguishes it from 86, and
+    # indie-folk is a specific we make; reading it as pop would make the label
+    # redundant with a tag Deezer applies separately.
+    "133": "folk",
 }
 
 DEEZER_OUTSIDE_ROSTER: dict[str, str] = {
@@ -620,6 +635,109 @@ def status(*, now: datetime | None = None, data: dict | None = None) -> dict:
 
 
 # ── external evidence ────────────────────────────────────────────────────────
+def external_counts(feeds) -> dict:
+    """Today's charts as family counts, with the scopes kept apart.
+
+    The taxonomy lives here rather than in the feed modules on purpose: apple.py
+    and deezer.py fetch and report what the endpoint said, and exactly one file
+    decides what an id means. That is the same argument the module header makes
+    for keeping the vocabulary out of the codex, applied one layer down.
+
+    Apple is split on release age because blending is what produces the wrong
+    number. On the US chart today the blended count is country 23 to pop 6,
+    which reads as a rout; the current-release count is country 6 to pop 6,
+    which is a tie, and the other 17 country entries are catalogue. Both are
+    true about different questions and neither is the sum of the other, so they
+    are returned as two counts and no total is offered anywhere.
+
+    Deezer is a third count and not folded into either. It is a different
+    population answering the same question, and the same day Apple says country
+    leads it says pop leads — that disagreement is a reason to hold confidence
+    down, which it cannot be if it has already been averaged away.
+
+    Ids the roster deliberately excludes are counted under ``outside_roster``
+    by name, and ids we have simply never seen under ``unrecognised``. Those
+    are different facts: the first says the chart is partly a genre the studio
+    chose not to make, the second says this file is missing a row.
+    """
+    current: dict[str, int] = defaultdict(int)
+    catalogue: dict[str, int] = defaultdict(int)
+    deezer_hits: dict[str, int] = defaultdict(int)
+    outside: dict[str, dict[str, int]] = {k: defaultdict(int)
+                                          for k in ("current", "catalogue", "deezer")}
+    unknown: dict[str, dict[str, int]] = {k: defaultdict(int) for k in ("apple", "deezer")}
+    entries = {"apple_current": 0, "apple_catalogue": 0, "apple_undated": 0,
+               "deezer": 0}
+    sources: list[str] = []
+
+    def tally(ids, names, fam_of, outside_map, into, outside_into, unknown_into) -> None:
+        # Each entry contributes at most once per family. An album tagged
+        # "Country, Pop" is a crossover record that belongs in both counts, but
+        # a record tagged twice under one family is still one record.
+        labels = list(names or [])
+        seen: set[str] = set()
+        for pos, raw in enumerate(ids or []):
+            key = str(raw).strip()
+            fam = fam_of(key)
+            if fam:
+                if fam not in seen:
+                    seen.add(fam)
+                    into[fam] += 1
+            elif key in outside_map:
+                outside_into[outside_map[key]] += 1
+            elif key not in APPLE_UMBRELLA_IDS:
+                # The id is what identifies the genre and the name is
+                # localised decoration, but the name is what makes an
+                # unrecognised row actionable, so both are kept together.
+                name = labels[pos] if pos < len(labels) and labels[pos] else key
+                unknown_into[f"{str(name)[:40]} ({key})"] += 1
+
+    for feed in feeds or []:
+        if not getattr(feed, "ok", False):
+            continue
+        source = getattr(feed, "source", "")
+        if source == "apple":
+            sources.append("apple")
+            for item in feed.items:
+                window = item.get("window")
+                if window == "current":
+                    entries["apple_current"] += 1
+                    bucket, out_bucket = current, outside["current"]
+                elif window == "catalogue":
+                    entries["apple_catalogue"] += 1
+                    bucket, out_bucket = catalogue, outside["catalogue"]
+                else:
+                    # No usable releaseDate, so it belongs to neither scope.
+                    # Counting it in both would double it and counting it in
+                    # catalogue would assert an age the feed did not give.
+                    entries["apple_undated"] += 1
+                    continue
+                tally(item.get("genre_ids"), item.get("genres"), apple_family,
+                      APPLE_OUTSIDE_ROSTER, bucket, out_bucket, unknown["apple"])
+        elif source == "deezer":
+            sources.append("deezer")
+            for item in feed.items:
+                if not item.get("genre_ids"):
+                    continue    # only the enriched rows carry genre at all
+                entries["deezer"] += 1
+                tally(item.get("genre_ids"), item.get("genres"), deezer_family,
+                      DEEZER_OUTSIDE_ROSTER, deezer_hits, outside["deezer"],
+                      unknown["deezer"])
+
+    def plain(d: dict) -> dict:
+        return dict(sorted(d.items(), key=lambda kv: (-kv[1], kv[0])))
+
+    return {
+        "current": plain(current),
+        "catalogue": plain(catalogue),
+        "deezer": plain(deezer_hits),
+        "outside_roster": {k: plain(v) for k, v in outside.items()},
+        "unrecognised": {k: plain(v) for k, v in unknown.items()},
+        "entries": entries,
+        "sources": sorted(sources),
+    }
+
+
 def external_families(calibration: dict | None, external: dict | None) -> dict[str, list[str]]:
     """Which families today's outside feeds name, and who named each.
 
@@ -629,12 +747,14 @@ def external_families(calibration: dict | None, external: dict | None) -> dict[s
     families the studio has sampled equally — recorded in the row's ``why`` so
     the influence is visible rather than inferred.
 
-    ``external`` is the normalised counts written by the signal phase, shaped
-    ``{"current": {family: n}, "catalogue": {family: n}}``. Only *current* is
-    read here. Catalogue is 31 of 50 US entries on a typical day, largely
-    back-catalogue riding a news cycle, and it says what was popular, not what
-    is being released — blending the two is what turns a 6-6 tie between
-    country and pop into a 23-6 rout.
+    ``external`` is what :func:`external_counts` wrote in the signal phase.
+    Only the two current-release counts are read — Apple's ``current`` and
+    Deezer's chart. ``catalogue`` is 31 of 50 US entries on a typical day,
+    largely back-catalogue riding a news cycle, and it says what was popular,
+    not what is being released; blending it in is what turns a 6-6 tie between
+    country and pop into a 23-6 rout. The two live counts are kept as separate
+    provenance strings rather than added, so a family both feeds name reads as
+    two sources agreeing instead of as a bigger number.
 
     ``calibration`` is the Scout's ``sonic_calibration.genre_mix``, free text
     from a model. It is slugged and matched exactly; a name that does not match
@@ -644,12 +764,16 @@ def external_families(calibration: dict | None, external: dict | None) -> dict[s
     """
     out: dict[str, list[str]] = defaultdict(list)
 
-    current = (external or {}).get("current") if isinstance(external, dict) else None
-    if isinstance(current, dict):
-        for name, count in current.items():
+    ext = external if isinstance(external, dict) else {}
+    for key, provenance in (("current", "the current-release chart"),
+                            ("deezer", "the Deezer chart")):
+        counts = ext.get(key)
+        if not isinstance(counts, dict):
+            continue
+        for name, count in counts.items():
             fam = family_of(name)
             if fam and count:
-                out[fam].append("the current-release chart")
+                out[fam].append(provenance)
 
     mix = (calibration or {}).get("genre_mix") if isinstance(calibration, dict) else None
     for name in mix if isinstance(mix, list) else []:

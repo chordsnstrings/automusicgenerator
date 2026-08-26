@@ -468,7 +468,8 @@ class Spaces:
                                 retryable=False) from exc
 
 
-def strip_wav_metadata(dry_run: bool = False, limit: int = 0) -> dict:
+def strip_wav_metadata(dry_run: bool = False, limit: int = 0,
+                       pause_s: float = 4.0) -> dict:
     """Remove the INFO chunk from WAV rows written before the master stopped
     carrying one.
 
@@ -487,9 +488,20 @@ def strip_wav_metadata(dry_run: bool = False, limit: int = 0) -> dict:
 
     One file at a time, through a temporary file rather than memory, and columns
     selected by name so no other row's `data` is ever loaded.
+
+    It also waits between files, which is not politeness. The first attempt at
+    this walked five masters back to back — read 57 MB, rewrite 57 MB, repeat —
+    and the managed cluster is one vCPU with a gigabyte of RAM. It stopped
+    accepting connections partway through, the web service answered 500 for a
+    minute, and the worker only recovered because startup retries with backoff.
+    No row was damaged, because each update is its own transaction and is only
+    issued once the audio hash matches. But a repair that walks large binary
+    columns has to leave the cluster room to serve the application it belongs
+    to, and a few seconds a file is cheaper than an outage.
     """
     import subprocess
     import tempfile
+    import time
 
     from sqlalchemy import select, update
 
@@ -512,7 +524,9 @@ def strip_wav_metadata(dry_run: bool = False, limit: int = 0) -> dict:
     out = {"checked": 0, "stripped": 0, "already_clean": 0,
            "skipped": [], "dry_run": dry_run}
 
-    for row_id, key in rows:
+    for n, (row_id, key) in enumerate(rows):
+        if n and pause_s:
+            time.sleep(pause_s)
         out["checked"] += 1
         with session_scope() as s:
             blob = s.execute(select(StoredFile.data)

@@ -33,10 +33,16 @@ compiler can both work from. You also own the one thing nobody else is watching:
 whether today's releases are actually different from each other, and from the \
 last fortnight's.
 
-Spread the set deliberately across tempo, mood, vocal gender, lyrical person and \
-subject matter. If two briefs would produce songs a listener could confuse, \
-change one. A day of variations on one idea is a wasted day even if every \
-individual song is good.
+Spread the set deliberately across genre, tempo, mood, vocal gender, lyrical \
+person and subject matter. If two briefs would produce songs a listener could \
+confuse, change one. A day of variations on one idea is a wasted day even if \
+every individual song is good.
+
+Each spec already carries a genre_family, decided before you from the day's \
+ratings and today's charts. It is not yours to change and you are not asked to \
+copy it — it is carried through for you. Read it: two briefs in the same family \
+have to differ somewhere else, and on the studio's first real day three of six \
+briefs were the same family with nothing in the pipeline noticing.
 
 Assign each brief a persona from the cast provided. Match the persona's \
 territory and tempo preference — putting a restrained close-mic vocalist on a \
@@ -99,7 +105,13 @@ def run(specs: list[dict], codex: Codex, *, history_days: int = 14) -> list[dict
             "persona_id": persona.get("persona_id") if persona else None,
             "persona_model": persona.get("persona_model", "style_persona") if persona else None,
             "angle": str(b.get("angle") or "")[:200],
-            "diversity_vector": b.get("diversity_vector") or {},
+            # Copied from the spec rather than asked for, because the genre was
+            # decided two roles ago and a model asked to restate a decision it
+            # did not make will occasionally restate it differently. It is in
+            # the vector so the duplicate check and the fortnight of history the
+            # next run reads both see it.
+            "diversity_vector": {**(b.get("diversity_vector") or {}),
+                                 "genre_family": spec.get("genre_family")},
         })
 
     _rebalance_personas(briefs, cast)
@@ -145,15 +157,24 @@ def _rebalance_personas(briefs: list[dict], cast: list[dict]) -> None:
 
 
 def _flag_duplicates(briefs: list[dict]) -> list[tuple[str, str]]:
-    """Two briefs sharing mood, tempo band and subject are the same song."""
+    """Two briefs sharing genre, mood, tempo band and subject are the same song.
+
+    Genre joined this key rather than replacing part of it. A ballad about
+    leaving is a different record in country and in electronic, so genre
+    genuinely belongs in what makes two briefs distinguishable — but adding a
+    dimension to a collision key can only ever flag fewer pairs, so this is not
+    what stops a day going three-quarters country. That is the per-family cap
+    the slate allocates under, enforced upstream where the counts are decided.
+    """
     seen: dict[tuple, str] = {}
     dupes = []
     for b in briefs:
         dv = b.get("diversity_vector") or {}
-        key = (str(dv.get("mood", "")).lower(),
+        key = (str(dv.get("genre_family") or "").lower(),
+               str(dv.get("mood", "")).lower(),
                str(dv.get("tempo_band", "")).lower(),
                str(dv.get("subject", "")).lower())
-        if key == ("", "", ""):
+        if not any(key):
             continue
         if key in seen:
             dupes.append((seen[key], b["title"]))

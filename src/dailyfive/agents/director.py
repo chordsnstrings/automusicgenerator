@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 
+from .. import genres
 from ..codex import Codex
 from .base import ask_json
 
@@ -45,6 +46,45 @@ SYSTEM_TAIL = """Respect the codex's learned observations where they exist. They
 come from real measured outcomes, and they beat your priors. Where the codex is \
 empty, say so rather than inventing a track record."""
 
+# Two blocks, because they answer to different conditions. The genre fields are
+# always asked for — a spec written on a day with no slate still has to carry
+# the labels the next sixty days of evidence get joined against — while the
+# slate itself only exists once there is something to allocate.
+GENRE_BRIEFING = """Every spec carries two genre labels: a FAMILY and a \
+SPECIFIC within it. Copy both VERBATIM from the vocabulary supplied below. They \
+are not description, they are keys: they get joined against outcome ratings for \
+months, so "country-folk" and "country folk" are two genres with no history \
+each, which is exactly why the studio has learned nothing about genre so far. \
+Say whatever you like about the sound in style_string — that is the free text. \
+These two fields are controlled terms.
+
+The genre field buys you NOTHING on the rest of the spec. "Country" is not a \
+tempo, not a key, not a form and not a palette, and a style_string that leans \
+on the label instead of describing the record is the adjective problem wearing \
+a new hat. Write the spec exactly as you would if the genre fields were not \
+there — same BPM, same key, same form, same hook position — and then fill them \
+in. A spec whose style_string is a genre name with decoration around it is a \
+spec nobody can check afterwards, which is the one thing this role exists to \
+prevent."""
+
+GENRE_SLATE = """Today's genre slate is decided before you and arrives with the \
+themes. It is a set of COUNTS, not an assignment: it says how many of today's \
+specs are country and how many are alt-R&B, and shows the evidence behind each. \
+Which THEME gets which GENRE is your call and nobody else's — you are the only \
+role that sees the situation and the specification at the same time, and a \
+pairing you cannot write as a checkable spec is worse than a pairing that is \
+off-trend.
+
+A slate entry showing n: 0 is an experiment, not a track record. Do not write \
+it into codex_notes as though it were one, and do not let it steer a spec \
+harder than a genre with real ratings behind it would.
+
+If a slate genre cannot be paired with any remaining theme without producing a \
+spec you would not defend, use a different label from the vocabulary for at \
+most ONE spec and give your reason in genre_off_slate_reason. Do not substitute \
+silently: an off-slate choice with a reason is evidence about the slate, an \
+unexplained one is noise."""
+
 SCHEMA = """{
   "specs": [
     {
@@ -57,14 +97,17 @@ SCHEMA = """{
       "hook_note": "where the hook lands and what makes it stick, <= 160 chars",
       "vocal_gender": "m|f",
       "style_string": "comma-separated production descriptors for the generator, <= 900 chars, NO artist names",
-      "mix_note": "<= 120 chars"
+      "mix_note": "<= 120 chars",
+      "genre_family": "one family, copied verbatim from the vocabulary",
+      "genre": "one specific from that family, copied verbatim from the vocabulary",
+      "genre_off_slate_reason": "only when genre_family is not on today's slate, <= 160 chars"
     }
   ],
   "codex_notes": ["observations worth carrying into the codex, <= 3 items"]
 }"""
 
 
-def _system(lanes: list[str]) -> str:
+def _system(lanes: list[str], *, slate: bool = False) -> str:
     """The prompt describes only the lanes the run has slots for.
 
     A model told at length how to write a short cut writes some, and a spec in a
@@ -72,7 +115,11 @@ def _system(lanes: list[str]) -> str:
     run() costs a generation, not a stray sentence. Building the briefing from
     the lanes is what keeps that true in either configuration.
     """
-    return "\n\n".join([SYSTEM_HEAD, *(BRIEFINGS[lane] for lane in lanes), SYSTEM_TAIL])
+    blocks = [SYSTEM_HEAD, *(BRIEFINGS[lane] for lane in lanes), GENRE_BRIEFING]
+    if slate:
+        blocks.append(GENRE_SLATE)
+    blocks.append(SYSTEM_TAIL)
+    return "\n\n".join(blocks)
 
 
 def _ask(counts: list[tuple[str, int]]) -> str:
@@ -87,8 +134,30 @@ def _schema(lanes: list[str]) -> str:
     return SCHEMA.replace("SLOT_TYPES", "|".join(lanes))
 
 
+def _slate_section(slate: list[dict] | None) -> str:
+    """The slate, or the honest sentence saying there is not one yet.
+
+    An absent section would leave the model to infer why it is being asked for
+    a genre with no evidence attached, and the SYSTEM_TAIL instinct — say the
+    codex is empty rather than invent a track record — only works if the
+    emptiness is stated.
+    """
+    vocab = f"Genre vocabulary (family: specifics):\n{json.dumps(genres.VOCABULARY)}\n\n"
+    if not slate:
+        return (vocab +
+                "No genre slate today — the vocabulary has been read but nothing "
+                "has been briefed yet. Choose each spec's genre yourself from the "
+                "vocabulary above, and fill both fields anyway: they are the "
+                "labels the next sixty days of evidence get joined against.\n\n")
+    total = sum(int(e.get("specs") or 0) for e in slate)
+    return (vocab +
+            f"Today's genre slate — {total} specs:\n"
+            f"{json.dumps(slate, ensure_ascii=False)}\n\n")
+
+
 def run(themes: list[dict], codex: Codex, *, full_n: int, short_n: int,
-        calibration: dict | None = None) -> list[dict]:
+        calibration: dict | None = None,
+        slate: list[dict] | None = None) -> list[dict]:
     """Produce full_n + short_n musical specs from the ranked themes."""
     counts = [(name, n) for name, n in (("full", full_n), ("short", short_n)) if n]
     lanes = [name for name, _ in counts]
@@ -101,14 +170,16 @@ def run(themes: list[dict], codex: Codex, *, full_n: int, short_n: int,
         f"Today's ranked themes:\n{json.dumps(usable, ensure_ascii=False)}\n\n"
         f"Sonic calibration from the lagging feeds:\n"
         f"{json.dumps(calibration or {}, ensure_ascii=False)}\n\n"
-        f"Codex v{codex.version}:\n{codex.brief_context(slots=lanes)}\n\n"
+        + _slate_section(slate)
+        + f"Codex v{codex.version}:\n{codex.brief_context(slots=lanes)}\n\n"
         + "".join(f"Available song forms — {lane}: "
                   f"{json.dumps(forms.get(lane, []))}\n" for lane in lanes)
         + "\nSpread the specs across tempo bands and moods. Two specs that would "
           "produce the same song are a wasted slot."
     )
 
-    result = ask_json("director", _system(lanes), user, schema_hint=_schema(lanes),
+    result = ask_json("director", _system(lanes, slate=bool(slate)), user,
+                      schema_hint=_schema(lanes),
                       max_tokens=6000, temperature=1.0, label="specs")
     specs = result.get("specs") or []
 
@@ -120,7 +191,13 @@ def run(themes: list[dict], codex: Codex, *, full_n: int, short_n: int,
         style = str(spec.get("style_string") or "").strip()
         if not style:
             continue
-        out.append({
+        # Same idiom as vocal_gender below: a value off the controlled set
+        # becomes None here rather than being trusted downstream. A spec whose
+        # genre does not normalise is kept and written with NULLs — dropping it
+        # would cost a whole generation over a label, and the count of specs
+        # that arrive off-vocabulary is the evidence that a term is missing.
+        family, label = genres.normalise(spec.get("genre_family"), spec.get("genre"))
+        cleaned = {
             "theme": str(spec.get("theme") or "")[:300],
             "slot_type": st,
             "bpm": _int_or_none(spec.get("bpm")),
@@ -131,7 +208,20 @@ def run(themes: list[dict], codex: Codex, *, full_n: int, short_n: int,
             "vocal_gender": spec.get("vocal_gender") if spec.get("vocal_gender") in ("m", "f") else None,
             "style_string": style[:900],
             "mix_note": str(spec.get("mix_note") or "")[:200],
-        })
+            "genre_family": family,
+            "genre": label,
+            "genre_off_slate_reason": str(spec.get("genre_off_slate_reason") or "")[:160] or None,
+        }
+        if family and _answered_with_the_label(cleaned):
+            # The instruction not to lean on the label is a request; this is
+            # what notices when it was not honoured. Recorded, never repaired:
+            # rewriting a style_string here would put words in the Director's
+            # mouth, and the count is what makes the failure arguable at the
+            # end of the week instead of invisible.
+            cleaned["genre_label_only"] = True
+            log.warning("director: %r spec leans on the genre label rather than "
+                        "specifying: %r", family, cleaned["style_string"][:120])
+        out.append(cleaned)
 
     full = [s for s in out if s["slot_type"] == "full"][:full_n]
     short = [s for s in out if s["slot_type"] == "short"][:short_n]
@@ -147,6 +237,32 @@ def run(themes: list[dict], codex: Codex, *, full_n: int, short_n: int,
     for spec in full + short:
         spec["_codex_notes"] = notes
     return full + short
+
+
+def _answered_with_the_label(spec: dict) -> bool:
+    """Whether a spec answered with the genre word instead of the specification.
+
+    Handing a model the word "country" invites it to write "country" back, and
+    a style_string that is a genre name with a couple of adjectives around it
+    is precisely the failure SYSTEM_HEAD exists to prevent — reappearing under
+    a field that did not exist when SYSTEM_HEAD was written.
+
+    Two conditions, and both are deliberately the degenerate case rather than a
+    quality judgement. A style_string with nothing in it once the vocabulary
+    terms are removed is a label, not a description. A spec carrying a genre
+    but neither a tempo nor a form has had its checkable core crowded out by
+    the label — those two fields are the ones SYSTEM_HEAD names, and they are
+    separate keys precisely so the genre cannot swallow them.
+
+    What this cannot catch is the middle: "country, upbeat, catchy" clears both
+    tests and is still adjectives. Nothing here can measure that, and claiming
+    otherwise would be worse than the gap.
+    """
+    fragments = [f.strip() for f in (spec.get("style_string") or "").split(",")]
+    described = [f for f in fragments if f and genres.family_of(f) is None]
+    if not described:
+        return True
+    return not spec.get("bpm") and not spec.get("song_form")
 
 
 def _int_or_none(v) -> int | None:

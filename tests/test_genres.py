@@ -311,33 +311,62 @@ def test_free_prose_style_strings_never_accumulate():
         "a fragment repeated within one day — the fixture no longer pins the defect")
 
 
-def test_two_briefs_are_four_clip_rows_and_that_is_how_the_codex_was_taught():
-    """The doubling, stated as a test because it is the actual defect.
-
-    ``archivist.aggregate`` counts clip ROWS, and one brief returns two clips
-    carrying identical brief-derived fields — so two briefs look like four
-    observations and clear MIN_OBSERVATIONS on one day's noise. That is how
-    "no synths 6.11" and "no pads 6.11" became the studio's entire learned
-    style vocabulary. The genre columns are counted over distinct briefs
-    instead, so the same two briefs stay unranked.
-    """
-    from dailyfive.archivist import aggregate
-
+def _two_briefs_rated(style: str) -> int:
+    """Two briefs, four clip rows, every one rated. Returns the run id."""
     rid = _run(date.today())
     for idx in range(2):
         with session_scope() as s:
             b = Brief(run_id=rid, slot_type=SlotType.FULL, idx=idx,
                       title=f"D{idx}", theme="x", genre_family="country",
-                      genre="country-soul", style_string="no synths, no pads")
+                      genre="country-soul", style_string=style)
             s.add(b)
             s.flush()
             bid = b.id
         for cid in _clips(rid, bid, shipped=2):
             _rate(cid, 9)
+    return rid
 
-    assert aggregate()["style_scores"].get("no synths") is not None, (
-        "the defect is gone from the tokeniser — update this test, not the fixture")
+
+def test_two_briefs_are_four_clip_rows_and_that_is_how_the_codex_was_taught():
+    """The doubling, stated as a test because it is the actual defect.
+
+    ``archivist.aggregate`` counts clip ROWS, and one brief returns two clips
+    carrying identical brief-derived fields — so two briefs look like four
+    observations and clear MIN_OBSERVATIONS on one day's noise. That is how the
+    studio's entire learned style vocabulary came to be two entries off two
+    briefs. The genre columns are counted over distinct briefs instead, so the
+    same two briefs stay unranked.
+    """
+    from dailyfive.archivist import aggregate
+
+    _two_briefs_rated("brushed drums, upright bass")
+    assert aggregate()["style_scores"].get("brushed drums") is not None, (
+        "the doubling is gone from the aggregator — update this test, not the fixture")
     assert genres.scores()["families"]["country"]["taste"] is None
+
+
+def test_a_negation_never_becomes_something_observed_to_score_well():
+    """The live codex reached v3 with a learned table of exactly "no synths"
+    6.11 and "no pads" 6.11, rendered into the Music Director's prompt under a
+    heading saying they were observed to score well, beside an instruction
+    saying such observations beat its priors. An absence cannot be credited
+    with an outcome in either direction, so it is dropped where it is collected
+    and again where it is rendered.
+    """
+    from dailyfive.archivist import _style_tokens, aggregate
+    from dailyfive.codex import Codex, is_negation
+
+    assert _style_tokens("no synths, no pads, brushed drums") == ["brushed drums"]
+    assert is_negation("without strings") and not is_negation("nocturnal pads")
+
+    _two_briefs_rated("no synths, no pads")
+    assert aggregate()["style_scores"] == {}
+
+    # And the two already sitting in the live codex are not rendered either.
+    stale = Codex(version=3, body={"learned": {"style_scores": {"no synths": 6.11},
+                                               "avoid": ["no pads"]}}, personas=[])
+    context = stale.brief_context()
+    assert "no synths" not in context and "no pads" not in context
 
 
 def test_the_char_cap_drops_the_genre_fragment():

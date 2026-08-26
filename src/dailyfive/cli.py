@@ -437,7 +437,8 @@ def cmd_strip_wav(args) -> int:
     """Remove the INFO chunk from WAVs delivered before the master dropped it."""
     from .storage import strip_wav_metadata
     init_db()
-    result = strip_wav_metadata(dry_run=args.dry_run, limit=args.limit)
+    result = strip_wav_metadata(dry_run=args.dry_run, limit=args.limit,
+                                pause_s=args.pause)
     print(json.dumps(result, indent=2, default=str))
     if args.dry_run and result["stripped"]:
         print(f"\n  dry run — {result['stripped']} file(s) would be rewritten")
@@ -661,6 +662,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--dry-run", action="store_true",
                    help="report what would change without writing")
     s.add_argument("--limit", type=int, default=0, help="stop after N files")
+    s.add_argument("--pause", type=float, default=4.0,
+                   help="seconds between files; the cluster is 1 vCPU")
     s.set_defaults(fn=cmd_strip_wav)
 
     s = sub.add_parser("init-db", help="create tables and seed the codex")

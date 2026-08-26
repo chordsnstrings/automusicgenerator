@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from dailyfive import pipeline as pl
+from dailyfive import genres, pipeline as pl
 from dailyfive.config import settings
 from dailyfive.db import session_scope
 from dailyfive.models import Brief, Clip, Decision, Job, Run, RunPhase, Signal
@@ -88,10 +88,23 @@ def wired(monkeypatch, tmp_path):
     from dailyfive.agents import anr, clearance, director, lyricist, producer, scout
 
     monkeypatch.setattr(scout, "run", lambda region, want=10: {
-        "themes": THEMES, "sonic_calibration": {"tempo_centre": 96},
+        "themes": THEMES, "sonic_calibration": {"tempo_centre": 96,
+                                                "genre_mix": ["country", "pop"]},
+        "external_genres": {"current": {"country": 6, "pop": 6},
+                            "catalogue": {"country": 17}},
         "feeds_live": ["gtrends", "deezer"], "feeds_dead": {}})
 
-    def fake_director(themes, codex, *, full_n, short_n, calibration=None):
+    def fake_director(themes, codex, *, full_n, short_n, calibration=None, slate=None):
+        # The genre comes off the slate the way the real Director is told to
+        # take it, so the labels that reach the briefs, the clips and the ID3
+        # tag are the ones the allocator actually chose.
+        allocated = [row["genre_family"] for row in (slate or [])
+                     for _ in range(row["specs"])]
+
+        def genre_for(i):
+            family = allocated[i] if i < len(allocated) else "pop"
+            return {"genre_family": family, "genre": genres.VOCABULARY[family][0]}
+
         specs = []
         for i in range(full_n):
             specs.append({"theme": themes[i]["theme"], "slot_type": "full", "bpm": 84 + i,
@@ -99,14 +112,14 @@ def wired(monkeypatch, tmp_path):
                           "instrumentation": "sub bass, hats", "hook_note": "hook at 0:07",
                           "vocal_gender": "f" if i % 2 else "m",
                           "style_string": f"dark rnb, 808s, variant {i}",
-                          "mix_note": "vocal forward"})
+                          "mix_note": "vocal forward", **genre_for(i)})
         for i in range(short_n):
             specs.append({"theme": themes[full_n + i]["theme"], "slot_type": "short",
                           "bpm": 120 + i, "key": "A minor", "song_form": "Hook - Verse",
                           "instrumentation": "saw lead", "hook_note": "hook at 0:00",
                           "vocal_gender": "f",
                           "style_string": f"club, sidechain, variant {i}",
-                          "mix_note": "loud"})
+                          "mix_note": "loud", **genre_for(full_n + i)})
         return specs
     monkeypatch.setattr(director, "run", fake_director)
 
@@ -116,7 +129,8 @@ def wired(monkeypatch, tmp_path):
          "angle": f"angle {i}", "diversity_vector": {"mood": f"m{i}",
                                                      "tempo_band": "midtempo",
                                                      "person": "first",
-                                                     "subject": f"s{i}"}}
+                                                     "subject": f"s{i}",
+                                                     "genre_family": sp.get("genre_family")}}
         for i, sp in enumerate(specs)])
 
     monkeypatch.setattr(lyricist, "run", lambda brief, client=None: {
@@ -170,9 +184,10 @@ def wired(monkeypatch, tmp_path):
     monkeypatch.setattr(pl, "encode_mp3",
                         lambda src, dest: (Path(dest).write_bytes(b"MP3"), dest)[1])
     monkeypatch.setattr(pl, "cover_art", lambda brief, dest, **kw: None)
-    monkeypatch.setattr(pl, "tag_mp3", lambda *a, **kw: None)
+    tags = []
+    monkeypatch.setattr(pl, "tag_mp3", lambda *a, **kw: tags.append(kw))
 
-    return {"suno": fake_suno, "spaces": fake_spaces}
+    return {"suno": fake_suno, "spaces": fake_spaces, "tags": tags}
 
 
 def test_a_full_day_runs_end_to_end(wired):
@@ -216,6 +231,43 @@ def test_the_delivered_folder_has_everything(wired):
     assert "songs/2026-08-27/_rejected/rejects.json" in keys
     for name in ("master.wav", "master.mp3", "lyrics.txt", "lyrics.lrc", "meta.json"):
         assert sum(1 for k in keys if k.endswith(name)) == 5, f"missing {name}"
+
+
+def test_the_id3_genre_is_the_family_not_the_lead_style_fragment(wired):
+    """TCON is the frame every player groups a library by. The five files
+    shipped 2026-08-26 carry "slow country-folk ballad" and "uptempo alt-R&B at
+    the low end of uptempo" in it, which no library anywhere buckets."""
+    from dailyfive.genres import ID3_NAME
+
+    pl.run_daily(date(2026, 8, 27))
+    written = [t["genre"] for t in wired["tags"]]
+    assert len(written) == 5
+    assert set(written) <= set(ID3_NAME.values())
+    for value in written:
+        assert "," not in value and len(value) <= 24
+
+
+def test_the_run_records_the_slate_it_briefed_against(wired):
+    """The slate lands in the same session as the Brief rows: a slate with no
+    briefs under it is a plan nothing carried out."""
+    pl.run_daily(date(2026, 8, 27))
+    with session_scope() as s:
+        notes = s.query(Run).one().notes["genre"]
+        briefs = s.query(Brief).all()
+    assert sum(row["specs"] for row in notes["slate"]) == 7
+    assert notes["got"] == notes["asked"], "the Director drifted off the slate"
+    assert notes["unlabelled"] == 0 and notes["label_only"] == 0
+    assert all(b.genre_family for b in briefs)
+
+
+def test_every_clip_carries_the_genre_of_the_brief_it_came_from(wired):
+    pl.run_daily(date(2026, 8, 27))
+    with session_scope() as s:
+        by_brief = {b.id: (b.genre_family, b.genre) for b in s.query(Brief).all()}
+        clips = s.query(Clip).all()
+    assert len(clips) == 14
+    for c in clips:
+        assert (c.genre_family, c.genre) == by_brief[c.brief_id]
 
 
 def test_the_day_page_carries_a_rating_control_per_song(wired):

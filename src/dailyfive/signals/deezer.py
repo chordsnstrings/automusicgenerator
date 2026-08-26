@@ -1,8 +1,18 @@
-"""Deezer charts. No auth. Track objects carry BPM, which nothing else free does.
+"""Deezer charts. No auth. The second opinion on what genre is charting.
 
-That BPM field is the reason this feed is in the stack at all — it lets the
-Music Director check its tempo bands against what is actually charting rather
-than against a recollection of what usually charts.
+This feed used to be here for BPM, on the strength of the chart row's per-track
+``bpm`` field. That field is empty precisely where it would matter: Deezer's
+audio analysis lags ingestion, so ``/track/{id}`` returned ``bpm: 0`` for all
+ten of today's chart tracks, and every one before that. A tempo signal that is
+zero on new releases is not a tempo signal.
+
+Genre is real and is on neither the chart row nor the track — only on
+``/album/{id}``, which the chart row already gives us the id for. So the ten
+enrichment calls are spent there instead: same request budget, a populated
+field instead of an empty one. It is a genuinely independent read, and the
+disagreement is the useful part — the same day Apple's US chart says country
+leads pop 23 to 6, Deezer says pop leads country. Two feeds that agree tell you
+one thing; two that disagree tell you the question is open.
 """
 
 from __future__ import annotations
@@ -11,10 +21,10 @@ from ..http import request
 from . import FeedResult
 
 CHART_URL = "https://api.deezer.com/chart/0/tracks"
-TRACK_URL = "https://api.deezer.com/track/{id}"
+ALBUM_URL = "https://api.deezer.com/album/{id}"
 
 
-def fetch(limit: int = 25, *, with_bpm: int = 10) -> FeedResult:
+def fetch(limit: int = 25, *, with_genre: int = 10) -> FeedResult:
     try:
         resp = request("GET", CHART_URL, provider="deezer", params={"limit": limit},
                        timeout=30.0, attempts=2)
@@ -27,29 +37,35 @@ def fetch(limit: int = 25, *, with_bpm: int = 10) -> FeedResult:
     if "error" in data:
         return FeedResult("deezer", "lagging", error=str(data["error"])[:200])
 
+    rows = data.get("data") or []
     items = []
-    for i, t in enumerate(data.get("data") or []):
+    for i, t in enumerate(rows):
         items.append({
             "rank": t.get("position", i + 1),
             "title": t.get("title_short") or t.get("title"),
             "artist": (t.get("artist") or {}).get("name"),
             "duration_s": t.get("duration"),
-            "bpm": None,
+            "genres": [],
+            "genre_ids": [],
         })
 
-    # BPM needs a per-track call, so only the top few are enriched — enough to
-    # see where the tempo band sits without spending 25 round trips on it.
-    for i, t in enumerate((data.get("data") or [])[:with_bpm]):
-        tid = t.get("id")
-        if not tid:
+    # Genre needs a per-album call, so only the top few are enriched — enough
+    # to see where the chart sits without spending 25 round trips on it. An
+    # album carries several genres and they are kept all: "Country, Pop" on a
+    # crossover single is the record being two things, and picking one of them
+    # here would be inventing a precision the tag does not have.
+    for i, t in enumerate(rows[:with_genre]):
+        album_id = (t.get("album") or {}).get("id")
+        if not album_id:
             continue
         try:
-            r = request("GET", TRACK_URL.format(id=tid), provider="deezer",
+            r = request("GET", ALBUM_URL.format(id=album_id), provider="deezer",
                         timeout=15.0, attempts=1)
             if r.status_code == 200:
-                detail = r.json()
-                items[i]["bpm"] = detail.get("bpm") or None
-                items[i]["gain"] = detail.get("gain")
+                genres = ((r.json().get("genres") or {}).get("data") or [])
+                items[i]["genres"] = [g["name"] for g in genres if g.get("name")]
+                items[i]["genre_ids"] = [str(g["id"]) for g in genres
+                                         if g.get("id") is not None]
         except Exception:  # enrichment is optional; the chart row still stands
             continue
 

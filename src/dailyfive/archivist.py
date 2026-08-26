@@ -26,7 +26,7 @@ from datetime import date, timedelta
 from sqlalchemy import func, select
 
 from .codex import current as current_codex
-from .codex import save_new_version
+from .codex import is_negation, save_new_version
 from .db import session_scope
 from .errors import ProviderError
 from .models import Clip, Outcome, Run, SlotType
@@ -311,12 +311,19 @@ def weekly_retro(*, days: int = 14, dry_run: bool = False) -> dict:
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 def _style_tokens(style: str | None) -> list[str]:
+    """The scoreable fragments of a style string.
+
+    Negations are dropped rather than scored — see the note beside
+    ``codex.is_negation``. A fragment saying what is absent cannot be credited
+    with an outcome in either direction, and both of the two entries the live
+    learned table ever accumulated were negations.
+    """
     if not style:
         return []
     out = []
     for part in style.split(","):
         tok = part.strip().lower()
-        if 2 < len(tok) <= 40:
+        if 2 < len(tok) <= 40 and not is_negation(tok):
             out.append(tok)
     return out[:24]
 

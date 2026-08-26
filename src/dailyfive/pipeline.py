@@ -18,7 +18,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from . import archivist, codex, ledger
+from . import archivist, codex, genres, ledger
 from .agents import anr, clearance, compiler, director, lyricist, producer, scout
 from .config import settings
 from .conductor import Conductor
@@ -173,7 +173,8 @@ def _phase_sense(run_id: int, cfg) -> RunPhase:
         run = s.get(Run, run_id)
         run.notes = {**(run.notes or {}), "scout": {
             "feeds_live": sheet["feeds_live"], "feeds_dead": sheet["feeds_dead"],
-            "calibration": sheet.get("sonic_calibration", {})}}
+            "calibration": sheet.get("sonic_calibration", {}),
+            "external_genres": sheet.get("external_genres", {})}}
     log.info("sense: %d themes from %d live feeds",
              len(sheet["themes"]), len(sheet["feeds_live"]))
     return _advance(run_id, RunPhase.SENSED)
@@ -182,11 +183,22 @@ def _phase_sense(run_id: int, cfg) -> RunPhase:
 def _phase_brief(run_id: int, cfg) -> RunPhase:
     cx = codex.current()
     sheet = _signal_sheet(run_id)
+    # After the Scout and before the Director. The genre evidence — the day's
+    # genre_mix and the partitioned chart counts — is an output of the sense
+    # phase, so a slate chosen before it is chosen from nothing; and allocating
+    # one needs sixty days of ratings and a decision about the whole day, which
+    # is set-level reasoning the Director, working a spec at a time, has no
+    # basis for. Same seam A&R sits on for personas.
+    slate = genres.slate(cfg.total_briefs,
+                         calibration=sheet.get("calibration"),
+                         external=sheet.get("external_genres"))
     specs = director.run(sheet["themes"], cx, full_n=cfg.full_briefs,
                          short_n=cfg.short_briefs,
-                         calibration=sheet.get("calibration"))
+                         calibration=sheet.get("calibration"), slate=slate)
     if not specs:
         raise RuntimeError("director produced no specs")
+    genre_ledger = genres.enforce(specs, slate)
+    genre_ledger["label_only"] = sum(1 for sp in specs if sp.get("genre_label_only"))
 
     briefs = anr.run(specs, cx)
     with session_scope() as s:
@@ -204,14 +216,26 @@ def _phase_brief(run_id: int, cfg) -> RunPhase:
                 song_form=b.get("song_form"), instrumentation=b.get("instrumentation"),
                 vocal_gender=b.get("vocal_gender"),
                 style_string=b.get("style_string"),
+                genre_family=b.get("genre_family"), genre=b.get("genre"),
                 negative_tags=cx.negative_tags(),
                 diversity_vector={**(b.get("diversity_vector") or {}),
                                   "angle": b.get("angle"),
                                   "hook_note": b.get("hook_note"),
                                   "persona_model": b.get("persona_model")},
             ))
-        s.get(Run, run_id).codex_version = cx.version
+        run = s.get(Run, run_id)
+        run.codex_version = cx.version
+        # In the same session as the Brief rows on purpose: a slate persisted
+        # without the briefs it allocated is a plan nothing carried out, and a
+        # crash between the two would leave the console reporting a day that
+        # did not happen.
+        run.notes = {**(run.notes or {}), "genre": {"slate": slate, **genre_ledger}}
     log.info("brief: %s", ", ".join(f"{n} {name}" for name, n in counters.items() if n))
+    if (genre_ledger["unlabelled"] or genre_ledger["off_slate"]
+            or genre_ledger["label_only"]):
+        log.info("genre: %d off-vocabulary, %d off-slate, %d leaning on the label",
+                 genre_ledger["unlabelled"], len(genre_ledger["off_slate"]),
+                 genre_ledger["label_only"])
     return _advance(run_id, RunPhase.BRIEFED)
 
 
@@ -511,7 +535,14 @@ def _phase_ship(run_id: int, cfg, *, skip_art: bool = False) -> RunPhase:
         tag_mp3(mp3, title=title or "Untitled",
                 artist=brief.get("persona_name") or "The Daily Five",
                 album=f"The Daily Five — {date_key}", year=str(run_date.year),
-                genre=(clip_dict.get("style_string") or "").split(",")[0].strip() or None,
+                # TCON is the frame every player and library groups by, and the
+                # first fragment of a style string is not one: the five files
+                # shipped 2026-08-26 are tagged "slow country-folk ballad" and
+                # "uptempo alt-R&B at the low end of uptempo", which no library
+                # anywhere buckets. The family name is a real genre; a brief
+                # written before genre was recorded has none, and stays untagged
+                # rather than guessed at.
+                genre=genres.id3_name(brief.get("genre_family")),
                 cover=cover, lyrics=lyrics,
                 comment=f"run {run_date} · clip {clip_id} · not loudness normalised (WAV)")
 
@@ -674,6 +705,7 @@ def _signal_sheet(run_id: int) -> dict:
                    "confidence": r.confidence} for r in rows]
         notes = (run.notes or {}).get("scout", {})
     return {"themes": themes, "calibration": notes.get("calibration", {}),
+            "external_genres": notes.get("external_genres", {}),
             "feeds_live": notes.get("feeds_live", [])}
 
 
@@ -685,6 +717,7 @@ def _brief_dict(b: Brief) -> dict:
         "musical_key": b.musical_key, "song_form": b.song_form,
         "instrumentation": b.instrumentation, "vocal_gender": b.vocal_gender,
         "style_string": b.style_string, "negative_tags": b.negative_tags,
+        "genre_family": b.genre_family, "genre": b.genre,
         "persona_id": b.persona_id, "persona_name": b.persona_name,
         "persona_model": dv.get("persona_model"),
         "angle": dv.get("angle"), "hook_note": dv.get("hook_note"),

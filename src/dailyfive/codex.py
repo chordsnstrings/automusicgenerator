@@ -113,6 +113,30 @@ SEED_PERSONAS: list[dict[str, Any]] = [
 ]
 
 
+# A style fragment that begins with one of these describes what is ABSENT, and
+# an absence cannot be rendered in either direction without inverting it. The
+# live codex reached v3 with a learned table consisting entirely of "no synths"
+# 6.11 and "no pads" 6.11 — two negations, scraped out of prose, about to be
+# handed to the Music Director under a heading saying they were observed to
+# score well and an instruction saying such observations beat its priors. One
+# more run and the studio would have taught itself that the measured route to a
+# good song is removing instruments. The mirror image is no better: the same
+# token under "observed to fail, avoid" reads as avoid avoiding synths.
+#
+# So a negation is not a token that scored badly, it is a token that cannot be
+# scored. It is dropped where it is collected and again where it is rendered —
+# twice, because the live codex already holds two of them and a filter at the
+# tokeniser alone would still brief tomorrow's run from yesterday's table.
+NEGATION_PREFIXES = ("no ", "not ", "non-", "never ", "without ", "avoid ",
+                     "minus ", "zero ", "free of ", "absent ", "lacking ")
+
+
+def is_negation(token: str) -> bool:
+    """Whether a style fragment states an absence rather than a characteristic."""
+    tok = (token or "").strip().lower()
+    return tok.startswith(NEGATION_PREFIXES) or tok.endswith(("-free", " free"))
+
+
 @dataclass(slots=True)
 class Codex:
     version: int
@@ -167,11 +191,14 @@ class Codex:
             f"mix targets: {json.dumps(self.body.get('mix_targets', {}))}",
             f"palettes: {json.dumps(self.body.get('instrumentation_palettes', [])[:6])}",
         ]
-        if learned.get("style_scores"):
-            top = sorted(learned["style_scores"].items(), key=lambda kv: -kv[1])[:8]
+        scored = {k: v for k, v in (learned.get("style_scores") or {}).items()
+                  if not is_negation(k)}
+        if scored:
+            top = sorted(scored.items(), key=lambda kv: -kv[1])[:8]
             parts.append("observed to score well: " + ", ".join(f"{k} ({v:.1f})" for k, v in top))
-        if learned.get("avoid"):
-            parts.append("observed to fail, avoid: " + ", ".join(learned["avoid"][:10]))
+        avoid = [k for k in (learned.get("avoid") or []) if not is_negation(k)]
+        if avoid:
+            parts.append("observed to fail, avoid: " + ", ".join(avoid[:10]))
         if learned.get("notes"):
             parts.append("director notes: " + " | ".join(learned["notes"][-5:]))
         return "\n".join(parts)

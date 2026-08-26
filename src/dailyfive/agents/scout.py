@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 
+from .. import genres
 from ..signals import FeedResult, collect_all
 from .base import ask_json, clamp
 
@@ -30,6 +31,15 @@ this before anyone has written the song. Weight these heaviest for theme.
 - MODERATE (YouTube chart, Genius): confirms a theme has commercial traction.
 - LAGGING (Apple, Deezer, Last.fm): tells you the current sonic centre of \
 gravity — tempo, genre mix, duration norms. Use for calibration, not for ideas.
+
+The lagging feeds arrive as counted genre totals as well as raw rows. Apple's \
+counts are split into CURRENT (released within a year) and CATALOGUE (older), \
+and those are two different facts — a genre leading only on catalogue is being \
+replayed, not released. Never add the two together. Deezer counts a different \
+population and often disagrees with Apple; when they do, say so and lower the \
+confidence rather than picking a side. Use the supplied genre vocabulary \
+verbatim in genre_mix — those words are joined against months of outcomes, so \
+a synonym is a genre with no history behind it.
 
 Known limits of this stack, which you must respect rather than paper over:
 - There is NO TikTok velocity signal here. Do not claim to know what is rising \
@@ -58,7 +68,7 @@ SCHEMA = """{
     "tempo_centre": 0,
     "tempo_range": [0, 0],
     "duration_norm_s": 0,
-    "genre_mix": ["..."],
+    "genre_mix": ["family names, copied from the supplied vocabulary"],
     "notes": "what the lagging feeds say about the current centre of gravity"
   }
 }"""
@@ -80,11 +90,14 @@ def run(region: str = "US", *, want: int = 10,
             "every trend feed failed — refusing to invent themes from nothing. "
             "Check network access and the four optional API keys.")
 
+    external = genres.external_counts(live)
     payload = {
         "date_region": region,
         "available": [{"source": f.source, "lead": f.lead, "items": f.items[:30]}
                       for f in live],
         "unavailable": [{"source": f.source, "why": f.error} for f in dead],
+        "genre_counts": external,
+        "genre_vocabulary": list(genres.FAMILIES),
     }
     user = (
         f"Produce {want} ranked themes from today's feeds.\n\n"
@@ -115,7 +128,36 @@ def run(region: str = "US", *, want: int = 10,
 
     return {
         "themes": cleaned,
-        "sonic_calibration": result.get("sonic_calibration") or {},
+        "sonic_calibration": _calibration(result.get("sonic_calibration")),
+        "external_genres": external,
         "feeds_live": [f.source for f in live],
         "feeds_dead": {f.source: f.error for f in dead},
     }
+
+
+def _calibration(raw: object) -> dict:
+    """Put genre_mix into the controlled vocabulary before anyone downstream reads it.
+
+    The Scout is asked for family names and mostly returns them, but this is
+    the last point at which "Country Pop", "hip hop" and "R&B/Soul" can be
+    made into the labels the Director copies onto a brief. A prompt
+    instruction is a request; this is the guarantee.
+
+    Names that do not map are not guessed at — reconciling an outside label
+    with ours is judgement and belongs to the weekly retro, which proposes and
+    never writes. They are kept under their own key in the model's own words,
+    so the Director still sees "afrobeats was on the chart" and the console can
+    see how often the vocabulary was the thing that did not fit.
+    """
+    cal = dict(raw) if isinstance(raw, dict) else {}
+    mapped: list[str] = []
+    outside: list[str] = []
+    for name in cal.get("genre_mix") or []:
+        fam = genres.family_of(name)
+        if fam is None:
+            outside.append(str(name)[:40])
+        elif fam not in mapped:
+            mapped.append(fam)
+    cal["genre_mix"] = mapped
+    cal["genre_mix_outside_vocabulary"] = outside
+    return cal
