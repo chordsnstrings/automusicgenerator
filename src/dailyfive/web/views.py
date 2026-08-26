@@ -228,7 +228,10 @@ def _rate(clip_id: int, rating: int | None, back: str) -> str:
     # A second submit button in the same form, because a form cannot issue
     # DELETE and the no-JavaScript path has to keep working. Rendered only where
     # there is something to clear — offering to undo an unrated song is an
-    # invitation to wonder what it would do.
+    # invitation to wonder what it would do. RATE_JS creates and removes it on
+    # the same rule between reloads, which is the half that matters: the second
+    # after a mis-tap is the second somebody wants an undo, and there is no
+    # reload in it.
     clear = ('<button type="submit" name="clear" value="1" class="clear">clear</button>'
              if rating is not None else "")
     return (f'<form class="rate" method="post" action="/console/rate" '
@@ -566,6 +569,7 @@ def run_detail(run_date: date) -> str | None:
               ("credits", run.credits_spent if run.credits_spent is not None else "—")),
         _phase_flow(run.phase),
         _shortfall_note(run),
+        _art_note(run),
         "<h2>What the Scout found</h2>",
         table(["#", "Theme", "Feeling", "Lead", "Conf.", "Sources", "Evidence"],
               sig_rows, empty="no signals recorded", num_cols={0, 4}),
@@ -606,6 +610,28 @@ def _shortfall_note(run: Run) -> str:
     causes = "".join(f"<div>{esc(c)}</div>" for c in sf.get("causes", []))
     return (f'<div class="note" style="border-left-color:var(--bad)">'
             f'<span>Short of contract</span>{causes}</div>')
+
+
+def _art_note(run: Run) -> str:
+    """Why this day's folders hold no cover.jpg, on the page you open to ask.
+
+    The pipeline stopped logging an ERROR per song for an integration nobody
+    configured and wrote the reason onto the run instead. That was only half a
+    trade: a WARNING in a log the console exists to save you from reading is
+    not an answer to "why is there no artwork", and the alternative — noticing
+    the missing link, then guessing your way to /agents — is the same walk the
+    log was.
+
+    Not styled as a failure. An unconfigured optional provider is a settled
+    fact about the deployment, and the shortfall note's red rule is reserved
+    for a day that owes songs.
+    """
+    art = (run.notes or {}).get("art")
+    if not art or art.get("configured"):
+        return ""
+    reason = art.get("reason") or "not configured"
+    return (f'<div class="note"><span>No cover art</span>'
+            f'{esc(reason)} — the songs shipped without it.</div>')
 
 
 def _qc_cell(q: dict) -> str:
@@ -827,6 +853,11 @@ def files_page() -> str:
                    table(["Song", "Slot", "Persona", "Length", "Listen", "Files"], rows)]
 
     prefix = f"{cfg.spaces_bucket or '<bucket>'}/{cfg.spaces_prefix}"
+    # cover.jpg is the one basename the ship loop may not write, so the tree is
+    # drawn from ALWAYS_SHIPPED plus the same key the loop branches on rather
+    # than typed out. A fixed listing goes stale in whichever direction it was
+    # written: this one said five files and no artwork whatever the deployment.
+    per_song = list(ALWAYS_SHIPPED) + (["cover.jpg"] if cfg.ark_api_key else [])
     return page("Files", "".join([
         "<h1>Delivered files</h1>",
         '<p class="sub">Everything this studio has shipped'
@@ -838,7 +869,7 @@ def files_page() -> str:
         f'<pre>spaces://{esc(prefix)}/YYYY-MM-DD/\n'
         f'├─ manifest.json\n├─ index.html          '
         f'<i>the rating page</i>\n'
-        f'├─ 01_slug/  master.wav · master.mp3 · lyrics.txt · '
-        f'lyrics.lrc · meta.json\n└─ _rejected/rejects.json</pre>',
+        f'├─ 01_slug/  {esc(" · ".join(per_song))}\n'
+        f'└─ _rejected/rejects.json</pre>',
         *(blocks or ['<div class="empty">nothing delivered yet</div>']),
     ]), "/files")

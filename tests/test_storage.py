@@ -15,7 +15,7 @@ from dailyfive.config import reload_settings
 from dailyfive.db import session_scope
 from dailyfive.models import StoredFile
 from dailyfive.storage import (content_type_for, open_store,
-                               retype_stored_files)
+                               remeta_stored_files, retype_stored_files)
 from dailyfive.web.app import app
 
 # The basenames the ship loop writes into every delivered folder (pipeline.py).
@@ -133,3 +133,86 @@ def test_retype_does_not_read_the_bytes_of_every_row(store):
         tracemalloc.stop()
     assert result["fixed"] == 1
     assert peak < 8 << 20, f"peaked at {peak / 1e6:.1f} MB retyping one row"
+
+
+def _meta(cover):
+    import json
+    return json.dumps({"title": "T", "files": {
+        "wav": "master.wav", "mp3": "master.mp3", "cover": cover,
+        "lyrics_txt": "lyrics.txt", "lyrics_lrc": "lyrics.lrc"}}, indent=2)
+
+
+def _stored_meta(key):
+    import json
+    with session_scope() as s:
+        return json.loads(bytes(
+            s.query(StoredFile).filter(StoredFile.key == key).one().data))
+
+
+def test_remeta_drops_a_cover_that_was_never_made_and_then_does_nothing(store):
+    """Every manifest shipped before cover art became conditional names
+    cover.jpg, and no such file has ever existed. Fixing build_meta fixes
+    tomorrow's; these stay false for the rest of their retention window."""
+    key = store.put_text(_meta("cover.jpg"),
+                         store.key_for("2026-08-27", "01_x", "meta.json"))
+
+    assert remeta_stored_files()["fixed"] == 1
+    doc = _stored_meta(key)
+    assert doc["files"]["cover"] is None
+    assert doc["files"]["mp3"] == "master.mp3", "only the cover entry is touched"
+
+    assert remeta_stored_files()["fixed"] == 0
+
+
+def test_remeta_leaves_a_manifest_whose_cover_exists(store, tmp_path):
+    local = tmp_path / "cover.jpg"
+    local.write_bytes(b"jpeg")
+    store.upload(local, store.key_for("2026-08-27", "01_x", "cover.jpg"))
+    key = store.put_text(_meta("cover.jpg"),
+                         store.key_for("2026-08-27", "01_x", "meta.json"))
+
+    assert remeta_stored_files()["fixed"] == 0
+    assert _stored_meta(key)["files"]["cover"] == "cover.jpg"
+
+
+def test_remeta_does_not_read_a_purge_as_a_manifest_to_correct(store):
+    """Every folder loses its bytes on the same clock, so after a purge the
+    audio is gone too. Blanking those names would turn retention into a record
+    that the day never had a master."""
+    key = store.put_text(_meta(None),
+                         store.key_for("2026-08-01", "01_x", "meta.json"))
+    assert remeta_stored_files()["fixed"] == 0
+    assert _stored_meta(key)["files"]["wav"] == "master.wav"
+
+
+def test_repairing_a_manifest_does_not_extend_how_long_the_day_is_kept(store):
+    """put_text stamps a fresh expires_at. A sentence about a day is not a
+    reason to keep that day's bytes longer."""
+    key = store.put_text(_meta("cover.jpg"),
+                         store.key_for("2026-08-27", "01_x", "meta.json"))
+    with session_scope() as s:
+        before = s.query(StoredFile).filter(StoredFile.key == key).one().expires_at
+
+    assert remeta_stored_files()["fixed"] == 1
+    with session_scope() as s:
+        row = s.query(StoredFile).filter(StoredFile.key == key).one()
+    assert row.expires_at == before
+    assert row.size_bytes == len(bytes(row.data)), "size must follow the rewrite"
+
+
+def test_a_remeta_dry_run_reports_without_writing(store):
+    key = store.put_text(_meta("cover.jpg"),
+                         store.key_for("2026-08-27", "01_x", "meta.json"))
+    assert remeta_stored_files(dry_run=True)["fixed"] == 1
+    assert _stored_meta(key)["files"]["cover"] == "cover.jpg"
+    assert remeta_stored_files(dry_run=True)["fixed"] == 1
+
+
+def test_remeta_leaves_a_manifest_it_cannot_parse(store, caplog):
+    """A row it could not read is not a row to overwrite."""
+    key = store.put_text("{not json",
+                         store.key_for("2026-08-27", "01_x", "meta.json"))
+    assert remeta_stored_files()["fixed"] == 0
+    with session_scope() as s:
+        assert bytes(s.query(StoredFile).filter(
+            StoredFile.key == key).one().data) == b"{not json"

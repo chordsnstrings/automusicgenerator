@@ -32,9 +32,16 @@ log = logging.getLogger(__name__)
 # by an old container mid rolling deploy or restored from a pre-fix backup. On a
 # clean table it matches nothing and issues no UPDATE, so the standing cost is
 # one query a day.
+#
+# remeta is there for the same reasons and not one of them is that it will keep
+# finding work: new manifests are written correct. It stays daily because a
+# backup taken before the fix reintroduces the false ones exactly as it
+# reintroduces the wrong content types, and a repair that only ever ran once is
+# a repair nobody can rerun.
 SLOTS = (
     ("purge", 3, 0),
     ("retype", 3, 5),
+    ("remeta", 3, 10),
     ("backup", 4, 30),
     ("run", 5, 10),
 )
@@ -99,6 +106,9 @@ def _fire(name: str) -> None:
         elif name == "retype":
             from .storage import retype_stored_files
             log.info("retype: %s", retype_stored_files())
+        elif name == "remeta":
+            from .storage import remeta_stored_files
+            log.info("remeta: %s", remeta_stored_files())
         elif name == "backup":
             from .backup import dump
             path = dump()

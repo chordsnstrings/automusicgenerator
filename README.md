@@ -163,6 +163,7 @@ shipped. Until then the system is grading its own homework, and it says so.
 | `dailyfive run [--date] [--skip-art]` | the daily pipeline | the day's credits |
 | `dailyfive today [--date]` | what shipped, with clip ids | free |
 | `dailyfive rate <clip_id> <1-10>` | record your rating | free |
+| `dailyfive unrate <clip_id>` | take a rating back, keeping its note | free |
 | `dailyfive status` | recent runs and the learning signal | free |
 | `dailyfive retro [--dry-run]` | weekly codex retrospective | one model call |
 | `dailyfive serve` | callback and rating receiver | free |

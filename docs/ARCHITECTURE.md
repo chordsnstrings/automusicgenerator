@@ -115,9 +115,8 @@ audio is fine.
   (`ebur128`, `astats`, `silencedetect`) rather than a signal-processing library:
   ffmpeg is needed for encoding regardless, so this adds no dependency.
 - **Producer** — three independent scoring passes (hook strength in the first seven
-  seconds, vocal and mix quality, fit to today's trend sheet), then fills each slot
-  then fills the five slots from a field of fourteen and writes down why each
-  rejection lost.
+  seconds, vocal and mix quality, fit to today's trend sheet), then fills the five
+  slots from the clips QC passed and writes down why each rejection lost.
 - **Packager** — requests the true WAV, encodes 320kbps MP3, writes ID3 tags and a
   timestamped `.lrc`, uploads the dated folder and manifest. Cover art at 3000x3000
   is an optional ModelArk integration: with no `ARK_API_KEY` it is skipped, the run

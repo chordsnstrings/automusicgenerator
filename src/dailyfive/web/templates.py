@@ -53,6 +53,12 @@ button:hover{border-color:var(--hot)}
 button[aria-pressed=true]{background:var(--hot);border-color:var(--hot);color:#fff}
 button:disabled{opacity:.5;cursor:default}
 .done{color:var(--ok);font-size:.72rem;margin-top:.45rem;min-height:1.1em}
+/* Not one of the ten: it is not a score, and putting it in the grid would make
+   the row a 5 x 2 that is really 5 x 2 + 1 and give the undo the same weight as
+   the answer. Quiet, and under the thing it undoes. */
+.clear{margin-top:.2rem;padding:.3rem .55rem;font-size:.72rem;color:var(--dim);
+       border-color:transparent;text-decoration:underline}
+.clear:hover{color:var(--ink);border-color:transparent}
 footer{color:var(--dim);font-size:.72rem;margin-top:2.5rem;border-top:1px solid var(--rule);
        padding-top:1rem}
 @media(max-width:520px){
@@ -74,6 +80,12 @@ function mark(card,score,label){
   const out=card.querySelector('.done');
   card.querySelectorAll('button[data-score]').forEach(b=>{
     b.setAttribute('aria-pressed', Number(b.dataset.score)===Number(score)?'true':'false');});
+  // The console can render the undo only where there is something to undo,
+  // because it knows the rating server-side. This page is written into the
+  // day's folder before anyone has heard the songs, so it carries the control
+  // hidden and lets it follow the score instead. Same rule, one place it can
+  // be enforced.
+  card.querySelector('.clear').hidden = score==null;
   if(label!==null) out.textContent=label;
 }
 
@@ -102,6 +114,22 @@ CARDS.forEach(card=>{
         out.textContent='could not save ('+e.message+') — try again';
       }
     });
+  });
+
+  card.querySelector('.clear').addEventListener('click',async()=>{
+    // The buttons stay as they are until the server confirms, unlike the
+    // optimistic path above. A rating that failed to save is a message; a
+    // rating that failed to clear and looks cleared is a lie the page tells
+    // about a value still steering the codex.
+    out.textContent='clearing…';
+    try{
+      const r=await fetch(API+'/ratings/'+id,{method:'DELETE'});
+      if(!r.ok) throw new Error('HTTP '+r.status);
+      mark(card,null,'cleared');
+      try{localStorage.removeItem('rating:'+id);}catch(e){}
+    }catch(e){
+      out.textContent='could not clear ('+e.message+') — try again';
+    }
   });
 });
 
@@ -198,6 +226,7 @@ def _card(s: dict) -> str:
     <span>How good is this, 1&ndash;10?</span>
     <div class="btns">{buttons}</div>
     <div class="done" role="status"></div>
+    <button class="clear" hidden>clear this rating</button>
   </div>
 </div>"""
 

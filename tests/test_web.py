@@ -259,3 +259,27 @@ def test_the_day_page_clears_a_rating_the_server_no_longer_has():
                     [{"clip_id": 1, "title": "S", "mp3_url": "u"}],
                     api_base="https://songs.test")
     assert "removeItem('rating:'" in html
+
+
+def test_the_day_page_can_take_a_rating_back():
+    """The delivered page is the one designed for a phone and the one where the
+    mis-tap on a ten-button widget happens. Sending someone to a console at a
+    different host path to undo it is the feature nobody can find."""
+    from datetime import date
+    html = day_page(date(2026, 8, 27),
+                    [{"clip_id": 1, "title": "S", "mp3_url": "u"}],
+                    api_base="https://songs.test")
+    assert 'class="clear"' in html
+    assert "method:'DELETE'" in html
+    assert "/ratings/'+id" in html
+
+
+def test_the_day_page_offers_no_undo_until_there_is_a_rating():
+    """Same rule the console renders server-side. This page is written before
+    anyone has heard the songs, so it carries the control hidden instead."""
+    from datetime import date
+    html = day_page(date(2026, 8, 27),
+                    [{"clip_id": 1, "title": "S", "mp3_url": "u"}],
+                    api_base="https://songs.test")
+    assert '<button class="clear" hidden>' in html
+    assert ".clear').hidden = score==null" in html

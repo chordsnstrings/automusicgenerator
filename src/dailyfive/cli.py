@@ -422,6 +422,17 @@ def cmd_retype(args) -> int:
     return 0
 
 
+def cmd_remeta(args) -> int:
+    """Drop cover.jpg from manifests written before cover art was conditional."""
+    from .storage import remeta_stored_files
+    init_db()
+    result = remeta_stored_files(dry_run=args.dry_run)
+    print(json.dumps(result, indent=2, default=str))
+    if args.dry_run and result["fixed"]:
+        print(f"\n  dry run — {result['fixed']} manifest(s) would be corrected")
+    return 0
+
+
 def cmd_credits(args) -> int:
     from .providers.suno import SunoClient
     print(f"suno credits: {SunoClient().credits()}")
@@ -607,6 +618,11 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("retype", help="correct stored content types in place")
     s.add_argument("--dry-run", action="store_true")
     s.set_defaults(fn=cmd_retype)
+
+    s = sub.add_parser("remeta",
+                       help="drop a cover from manifests that name one that was never made")
+    s.add_argument("--dry-run", action="store_true")
+    s.set_defaults(fn=cmd_remeta)
 
     s = sub.add_parser("backup", help="dump the database and store it")
     s.add_argument("--local-only", action="store_true")

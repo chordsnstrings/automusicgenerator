@@ -130,8 +130,10 @@ class Settings:
     # brings the lane back; nothing else has to change.
     short_briefs: int = field(default_factory=lambda: _i("SHORT_BRIEFS", 0))
     short_slots: int = field(default_factory=lambda: _i("SHORT_SLOTS", 0))
-    # Read only when the short lane is on, but still range-checked, so a bad
-    # value is caught when the lane is switched on rather than on the run after.
+    # Read off SHORT_BRIEFS and not SHORT_SLOTS: the Director briefs the short
+    # lane from the brief count, and the requested duration travels with the
+    # brief from there. Range-checked even with the lane off, so a bad value is
+    # caught when the lane is switched on rather than on the run after.
     short_duration_s: int = field(default_factory=lambda: _i("SHORT_DURATION_S", 45))
     daily_credit_cap: int = field(default_factory=lambda: _i("DAILY_CREDIT_CAP", 800))
     # Polling cadence. Generation takes 60-90s, so a 20s interval notices

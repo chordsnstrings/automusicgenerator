@@ -46,8 +46,9 @@ measurements you are given.
 The QC metrics are objective and already passed threshold, so you are ranking \
 within "acceptable", not deciding pass or fail. A track sitting comfortably in \
 range scores higher than one that scraped through. Consider: how close to the \
-loudness target, how much true-peak headroom, how tight the duration is against \
-what was asked for, how little dead air.
+loudness target, how much true-peak headroom, \
+how tight the duration is against what was asked for, \
+how little dead air.
 
 Do not speculate about anything the metrics do not show. You cannot hear these.""",
 
@@ -59,6 +60,12 @@ evidence scores highest. A well-made song about nothing in particular scores in 
 the middle. A song chasing a lagging theme scores low — that moment already \
 happened.""",
 }
+
+# Only a short-form brief asks Suno for a length, so with the short lane off every
+# candidate carries a null here. A rubric naming a criterion the measurements cannot
+# support leaves the model to either drop a quarter of the axis or invent a target
+# and mark a five-minute song down for a length nobody requested.
+MIX_DURATION_CLAUSE = "how tight the duration is against what was asked for, "
 
 SCHEMA = """{"scores": [{"clip_id": 0, "score": 0.0, "why": "<= 120 chars"}]}"""
 
@@ -89,9 +96,9 @@ def run(candidates: list[dict], signals: dict, *, full_slots: int,
     scores: dict[int, dict[str, float]] = defaultdict(dict)
     reasons: dict[int, dict[str, str]] = defaultdict(dict)
 
-    for axis, system in AXES.items():
+    for axis in AXES:
         try:
-            got = _score_axis(axis, system, candidates, signals)
+            got = _score_axis(axis, _axis_system(axis, candidates), candidates, signals)
         except ProviderError as exc:
             log.warning("producer axis %s failed (%s) — defaulting to 5.0", axis, exc)
             got = {c["clip_id"]: (5.0, "axis unavailable") for c in candidates}
@@ -115,6 +122,13 @@ def run(candidates: list[dict], signals: dict, *, full_slots: int,
         "why": reasons[c["clip_id"]],
     } for c in candidates}
     return selection
+
+
+def _axis_system(axis: str, candidates: list[dict]) -> str:
+    """The mix rubric names the requested duration only when one was requested."""
+    if axis != "mix" or any(c.get("requested_duration_s") for c in candidates):
+        return AXES[axis]
+    return AXES["mix"].replace(MIX_DURATION_CLAUSE, "")
 
 
 def _score_axis(axis: str, system: str, candidates: list[dict],
@@ -154,9 +168,11 @@ def _view(c: dict, axis: str) -> dict:
                 "hook_note": c.get("hook_note"), "lyric_opening": lyr[:600],
                 "duration_s": c.get("duration_s")}
     if axis == "mix":
-        return {**base, "qc": c.get("qc"), "duration_s": c.get("duration_s"),
-                "requested_duration_s": c.get("requested_duration_s"),
-                "style_string": c.get("style_string")}
+        mix = {**base, "qc": c.get("qc"), "duration_s": c.get("duration_s"),
+               "style_string": c.get("style_string")}
+        if c.get("requested_duration_s"):
+            mix["requested_duration_s"] = c["requested_duration_s"]
+        return mix
     return {**base, "theme": c.get("theme"), "style_string": c.get("style_string"),
             "diversity_vector": c.get("diversity_vector")}
 

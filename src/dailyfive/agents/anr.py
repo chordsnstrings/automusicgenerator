@@ -35,12 +35,12 @@ last fortnight's.
 
 Spread the set deliberately across tempo, mood, vocal gender, lyrical person and \
 subject matter. If two briefs would produce songs a listener could confuse, \
-change one. A day of five variations on one idea is a wasted day even if every \
+change one. A day of variations on one idea is a wasted day even if every \
 individual song is good.
 
 Assign each brief a persona from the cast provided. Match the persona's \
 territory and tempo preference — putting a restrained close-mic vocalist on a \
-club track wastes both. Rotate so no persona takes more than half the day's slots.
+club track wastes both. Rotate so no persona takes more than half the briefs.
 
 Titles should be specific and memorable. Not "Midnight Dreams". Not "Broken \
 Hearts". Something a person would actually remember having heard."""
@@ -60,8 +60,7 @@ SCHEMA = """{
         "subject": "one or two words"
       }
     }
-  ],
-  "set_note": "why this set of five is varied, <= 300 chars"
+  ]
 }"""
 
 

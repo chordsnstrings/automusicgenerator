@@ -133,15 +133,18 @@ document.addEventListener('submit', async ev => {
   const buttons = form.querySelectorAll('button[name=rating]');
 
   if (ev.submitter.name === 'clear') {
-    buttons.forEach(b => b.setAttribute('aria-pressed', 'false'));
     out.textContent = 'clearing…';
     try {
       const r = await fetch('/ratings/' + id, {method: 'DELETE'});
       if (!r.ok) throw new Error('HTTP ' + r.status);
+      // Only once the server has agreed. A clear that failed and looks like it
+      // worked hides a value that is still steering the codex, and the control
+      // that would fix it is the one thing this branch removes.
+      buttons.forEach(b => b.setAttribute('aria-pressed', 'false'));
       out.textContent = '';
       ev.submitter.remove();
     } catch (e) {
-      out.textContent = 'could not clear (' + e.message + ') — reload and try again';
+      out.textContent = 'could not clear (' + e.message + ') — try again';
     }
     return;
   }
@@ -156,6 +159,21 @@ document.addEventListener('submit', async ev => {
       body: JSON.stringify({clip_id: id, rating: score})});
     if (!r.ok) throw new Error('HTTP ' + r.status);
     out.textContent = 'rated ' + score + '/10';
+    // The server renders the clear control only for a song that already has a
+    // rating, which is right for a page load and wrong for the second after a
+    // mis-tap — the one second anybody wants an undo. So the branch that
+    // creates a rating creates the control, mirroring the branch above that
+    // removes it. Without this the only way to reach an undo is a reload, and
+    // avoiding the reload is the entire reason this script exists.
+    if (!form.querySelector('button[name=clear]')) {
+      const undo = document.createElement('button');
+      undo.type = 'submit';
+      undo.name = 'clear';
+      undo.value = '1';
+      undo.className = 'clear';
+      undo.textContent = 'clear';
+      out.before(undo);
+    }
   } catch (e) {
     out.textContent = 'could not save (' + e.message + ') — reload and try again';
   }

@@ -287,6 +287,73 @@ def retype_stored_files(dry_run: bool = False) -> dict:
     return {"checked": checked, "fixed": total, "by_type": fixed}
 
 
+def remeta_stored_files(dry_run: bool = False) -> dict:
+    """Stop a stored meta.json naming a cover that was never made.
+
+    The same argument as retype_stored_files, applied to the other thing this
+    system stamps at write time. Every manifest shipped before cover art became
+    conditional says ``"cover": "cover.jpg"``, and not one of those files has
+    ever existed; correcting build_meta corrects tomorrow's, while the days
+    already in the table go on making a machine-readable false statement for
+    the rest of their retention window to anything that parses them.
+
+    Only the cover entry, and only when the sibling object is genuinely absent.
+    The other four names are written unconditionally by the packager, so a
+    missing master.wav means the purge has been through — a window expiring is
+    not a manifest to correct, and blanking those would turn retention into
+    data loss.
+
+    Rewritten in place rather than through put_text, which stamps a fresh
+    expires_at: repairing a sentence about a day must not extend how long that
+    day's bytes are kept.
+
+    Like retype, this reaches the database store only. There is no read hook on
+    the Spaces path and no way to walk it from here.
+    """
+    import json
+
+    from sqlalchemy import select, update
+
+    from .db import session_scope
+    from .models import StoredFile
+
+    checked = fixed = 0
+    with session_scope() as s:
+        present = {k for (k,) in s.execute(select(StoredFile.key)).all()}
+        rows = s.execute(
+            select(StoredFile.id, StoredFile.key, StoredFile.data)
+            .where(StoredFile.key.like("%/meta.json"))).all()
+        for row_id, key, data in rows:
+            checked += 1
+            try:
+                doc = json.loads(bytes(data).decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                # Not this job's problem to diagnose, and certainly not its job
+                # to overwrite something it could not read.
+                log.warning("remeta: %s is not readable JSON, left alone", key)
+                continue
+            files = doc.get("files") if isinstance(doc, dict) else None
+            cover = files.get("cover") if isinstance(files, dict) else None
+            if not cover:
+                continue
+            if key.rsplit("/", 1)[0] + "/" + str(cover) in present:
+                continue
+            fixed += 1
+            if dry_run:
+                continue
+            files["cover"] = None
+            body = json.dumps(doc, indent=2).encode("utf-8")
+            s.execute(update(StoredFile).where(StoredFile.id == row_id)
+                      .values(data=body, size_bytes=len(body),
+                              sha256=hashlib.sha256(body).hexdigest()))
+
+    if fixed:
+        log.info("remeta: %d of %d manifests %s", fixed, checked,
+                 "would drop a cover that was never made" if dry_run
+                 else "no longer name a cover that was never made")
+    return {"checked": checked, "fixed": fixed}
+
+
 def _kind_for(key: str, content_type: str) -> str:
     name = key.rsplit("/", 1)[-1].lower()
     if name.endswith(".wav"):

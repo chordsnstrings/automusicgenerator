@@ -110,6 +110,14 @@ def _brief_prompt(brief: dict) -> str:
         bits.append(f"Angle that makes it distinct: {brief['angle']}")
     if brief.get("song_form"):
         bits.append(f"Song form (follow exactly): {brief['song_form']}")
+    elif brief.get("slot_type") != "short":
+        # The song form is the only length instruction a full brief carries, and
+        # the Director is allowed to return a spec without one. Left out, both
+        # drafts get no length target at all and a full cut comes back a sketch;
+        # draft 2 is told to keep "the same song form and length", which needs
+        # something in the prompt to refer to.
+        bits.append("Song form: none specified — write a full song, 2.5-3.5 "
+                    "minutes, verses and a repeated chorus with a bridge.")
     if brief.get("hook_note"):
         bits.append(f"Hook: {brief['hook_note']}")
     if brief.get("bpm"):

@@ -371,3 +371,49 @@ def test_the_overview_states_the_shape_the_settings_produce(client, monkeypatch)
     reload_settings()
     assert ("5 finished songs a day, unattended. 3 full-length and 2 short-form, "
             "chosen from 14 candidates.") in client.get("/").text
+
+
+def test_the_console_offers_an_undo_the_moment_a_rating_is_made(client):
+    """The clear control is server-rendered only where there is a rating, which
+    leaves the second after a mis-tap — the one second anybody wants an undo —
+    with no control at all until a full reload. Avoiding the reload is the whole
+    reason this script exists."""
+    body = client.get("/").text
+    assert "createElement('button')" in body
+    assert "undo.name = 'clear'" in body
+    assert "!form.querySelector('button[name=clear]')" in body, \
+        "re-rating must not stack a second undo"
+
+
+def test_a_failed_clear_leaves_the_rating_showing(client):
+    """A clear that did not happen and looks like it did hides a value still
+    steering the codex, and removes the control that would fix it."""
+    body = client.get("/").text
+    rate_js = body[body.index("ev.submitter.name === 'clear'"):]
+    ok = rate_js.index("if (!r.ok) throw")
+    assert rate_js.index("aria-pressed', 'false'") > ok
+    assert rate_js.index("ev.submitter.remove()") > ok
+
+
+def test_the_run_page_says_why_a_day_shipped_without_artwork(client, populated):
+    """The pipeline stopped logging an ERROR per song for an unconfigured
+    provider and wrote the reason onto the run instead — beside "shortfall",
+    which this page already renders. Nothing read it, so an operator who
+    noticed the missing covers and opened the run got no explanation."""
+    with session_scope() as s:
+        run = s.get(Run, populated)
+        run.notes = {**(run.notes or {}),
+                     "art": {"configured": False, "reason": "ARK_API_KEY unset"}}
+
+    body = client.get("/runs/2026-08-27").text
+    assert "No cover art" in body
+    assert "ARK_API_KEY unset" in body
+    assert "border-left-color:var(--bad)" not in body, \
+        "an unconfigured optional provider is not a failed contract"
+
+
+def test_a_run_with_artwork_configured_says_nothing_about_it(client, populated):
+    with session_scope() as s:
+        run = s.get(Run, populated)
+        run.notes = {**(run.notes or {}), "art": {"configured": True}}
+    assert "No cover art" not in client.get("/runs/2026-08-27").text
