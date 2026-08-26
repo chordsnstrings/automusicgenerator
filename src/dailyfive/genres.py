@@ -350,9 +350,32 @@ TASTE_HALF_LIFE_DAYS = 90.0
 # the threshold at all. The window has to be long relative to how fast evidence
 # arrives, and here it arrives slowly.
 
-UCB_C = 1.0
+UCB_C = 0.2
 # Auer, Cesa-Bianchi & Fischer 2002, "Finite-time Analysis of the Multiarmed
-# Bandit Problem", Machine Learning 47:235-256.
+# Bandit Problem", Machine Learning 47:235-256 — but NOT their c=1, and the
+# departure is the whole point of this constant.
+#
+# c=1 is calibrated for rewards that actually span [0,1]. These do not. One
+# rater on a 1-10 scale occupies maybe four points of it in practice, so the
+# real reward spread is under half the interval the bound assumes, while at
+# c=1 the uncertainty term at the ranking threshold is 1.194 — larger than the
+# entire interval. The arithmetic that follows is not a subtlety:
+#
+#   a family you rated 8.0 over 30 briefs   0.778 + 0.617 = 1.394
+#   a family you rated 4.5 over  8 briefs   0.389 + 1.194 = 1.583   <- wins
+#
+# At c=1 the allocator prefers the one you disliked, and no rating gap a human
+# can express on a ten-point scale ever overturns it: the favourite needs to be
+# 5.2 points better. The exploration term would have silently outvoted every
+# rating this system will ever collect, and it would have looked like a
+# preference rather than a bug.
+#
+# 0.2 makes the premium between a family at the ranking threshold and one with
+# thirty briefs behind it worth about one rating point — the smallest
+# difference a single rater can honestly express, so evidence decides and
+# uncertainty only breaks ties. Pinned by
+# test_a_liked_family_beats_a_disliked_one_with_fewer_samples, which is the
+# test that would have caught this.
 
 _UCB_WHY = "\x00ucb"   # placeholder, replaced in slate() with the printed sum
 

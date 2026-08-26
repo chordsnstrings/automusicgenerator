@@ -785,3 +785,25 @@ def test_the_producer_mean_carries_the_clips_it_was_taken_over():
     assert row["producer"] == 9.4
     assert row["producer_n"] == 2
     assert row["briefed"] == 1, "the two counts are not the same count"
+
+
+def test_a_liked_family_beats_a_disliked_one_with_fewer_samples():
+    """The exploration term must break ties, not overrule the ratings.
+
+    UCB1's c=1 assumes rewards spanning [0,1]. A single rater on a ten-point
+    scale spans about four of those points, so at c=1 the uncertainty term at
+    the ranking threshold (1.194) exceeds the entire reward interval and the
+    allocator prefers whatever it has seen least, forever. This shipped that
+    way: a family rated 4.5 over 8 briefs outscored one rated 8.0 over 30, and
+    it read as a preference rather than a bug because the printed sum was
+    perfectly self-consistent.
+    """
+    liked = genres._scaled(8.0) + genres._bonus(30, 300)
+    disliked = genres._scaled(4.5) + genres._bonus(8, 300)
+    assert liked > disliked
+
+    # The premium for being under-sampled is worth about one rating point: the
+    # smallest difference one rater can honestly express. Much more and taste
+    # stops deciding; much less and nothing new is ever tried.
+    premium = (genres._bonus(8, 300) - genres._bonus(30, 300)) * 9
+    assert 0.5 < premium < 2.0, f"{premium:.2f} rating points"
