@@ -111,3 +111,20 @@ def test_complete_reports_which_brain_answered(env, monkeypatch):
     text, brain = llm.complete("lyricist", "s", "u")
     assert text == "hello"
     assert str(brain) == "minimax:MiniMax-M3"
+
+
+def test_managed_database_urls_get_a_driver_and_tls():
+    """Providers hand out bare postgres:// URLs; SQLAlchemy reaches for
+    psycopg2 without an explicit driver and fails on import, not on connect."""
+    from dailyfive.config import _normalise_db_url as n
+
+    assert n("postgres://u:p@host:25060/db").startswith("postgresql+psycopg://")
+    assert n("postgresql://u:p@host:25060/db").startswith("postgresql+psycopg://")
+    assert "sslmode=require" in n("postgres://u:p@host:25060/db")
+
+    # An explicit choice is never overridden.
+    assert n("postgresql://u:p@h/db?sslmode=disable").count("sslmode") == 1
+    # Local development needs no TLS and often has none available.
+    assert "sslmode" not in n("postgresql://u:p@localhost/db")
+    # SQLite passes through untouched.
+    assert n("sqlite:///x.db") == "sqlite:///x.db"

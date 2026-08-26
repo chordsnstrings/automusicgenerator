@@ -39,6 +39,27 @@ def _b(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _normalise_db_url(url: str) -> str:
+    """Name the driver, and insist on TLS to a managed cluster.
+
+    Every managed provider — DigitalOcean included — hands out a bare
+    ``postgres://`` or ``postgresql://`` URL. SQLAlchemy needs the driver named
+    or it reaches for psycopg2, which is not installed here; the failure is an
+    import error at connect time rather than anything about the database.
+
+    Also appends ``sslmode=require`` when talking to a remote host, because a
+    managed cluster accepts unencrypted connections and defaults to them.
+    """
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
+    if url.startswith("postgresql://"):
+        url = "postgresql+psycopg://" + url[len("postgresql://"):]
+    if url.startswith("postgresql+psycopg://") and "sslmode=" not in url:
+        if "localhost" not in url and "127.0.0.1" not in url:
+            url += ("&" if "?" in url else "?") + "sslmode=require"
+    return url
+
+
 @dataclass(frozen=True)
 class Settings:
     # Suno
@@ -94,7 +115,9 @@ class Settings:
     signal_region: str = field(default_factory=lambda: _s("SIGNAL_REGION", "US"))
 
     # Database
-    database_url: str = field(default_factory=lambda: _s("DATABASE_URL", "sqlite:///dailyfive.db"))
+    database_url: str = field(
+        default_factory=lambda: _normalise_db_url(
+            _s("DATABASE_URL", "sqlite:///dailyfive.db")))
 
     # Run shape
     full_briefs: int = field(default_factory=lambda: _i("FULL_BRIEFS", 4))

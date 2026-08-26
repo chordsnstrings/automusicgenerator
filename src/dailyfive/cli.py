@@ -410,6 +410,15 @@ def cmd_serve(args) -> int:
     return 0
 
 
+def cmd_scheduler(args) -> int:
+    """Long-running worker: runs the daily slots on its own clock."""
+    from .scheduler import run_forever
+    init_db()
+    print("scheduler starting — run 05:10, backup 04:30, purge 03:00 (UTC)")
+    run_forever(tick_seconds=args.tick, once=args.once)
+    return 0
+
+
 def cmd_initdb(args) -> int:
     init_db()
     codex.current()
@@ -537,6 +546,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--host", default="0.0.0.0")
     s.add_argument("--port", type=int, default=8080)
     s.set_defaults(fn=cmd_serve)
+
+    s = sub.add_parser("scheduler", help="run the daily slots as a worker")
+    s.add_argument("--tick", type=int, default=60)
+    s.add_argument("--once", action="store_true", help="evaluate slots once and exit")
+    s.set_defaults(fn=cmd_scheduler)
 
     s = sub.add_parser("init-db", help="create tables and seed the codex")
     s.set_defaults(fn=cmd_initdb)
