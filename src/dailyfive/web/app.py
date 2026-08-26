@@ -20,7 +20,7 @@ import hmac
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy import select
@@ -63,14 +63,51 @@ def _check_secret(secret: str) -> None:
 
 
 @app.get("/health")
-def health() -> dict:
-    with session_scope() as s:
-        runs = s.execute(select(Run).order_by(Run.run_date.desc()).limit(1)).scalar_one_or_none()
-        return {
-            "ok": True,
-            "latest_run": runs.run_date.isoformat() if runs else None,
-            "phase": runs.phase.value if runs else None,
-        }
+def health(response: Response) -> dict:
+    """Liveness plus the two things that actually go wrong unattended.
+
+    A health check that only reports "the process is up" is worthless on a
+    system whose failure mode is a run that quietly stopped happening. So this
+    also answers: can I reach the database, and did today's run actually ship?
+    Returns 503 when either is false, so an uptime monitor notices without
+    anyone reading a log.
+    """
+    from datetime import date, timedelta
+
+    out: dict = {"ok": True, "checks": {}}
+
+    try:
+        with session_scope() as s:
+            latest = s.execute(
+                select(Run).order_by(Run.run_date.desc()).limit(1)).scalar_one_or_none()
+        out["checks"]["database"] = "ok"
+    except Exception as exc:
+        response.status_code = 503
+        return {"ok": False, "checks": {"database": f"unreachable: {exc}"[:200]}}
+
+    if latest is None:
+        out["latest_run"] = None
+        out["checks"]["runs"] = "no run has ever completed"
+        return out
+
+    out["latest_run"] = latest.run_date.isoformat()
+    out["phase"] = latest.phase.value
+
+    age = (date.today() - latest.run_date).days
+    if latest.phase.value == "failed":
+        out["ok"] = False
+        out["checks"]["runs"] = f"the {latest.run_date} run failed: {(latest.error or '')[:160]}"
+        response.status_code = 503
+    elif age > 1:
+        out["ok"] = False
+        out["checks"]["runs"] = f"no run since {latest.run_date} ({age} days ago)"
+        response.status_code = 503
+    elif (latest.notes or {}).get("shortfall"):
+        out["checks"]["runs"] = "last run shipped short of contract"
+    else:
+        out["checks"]["runs"] = "ok"
+
+    return out
 
 
 @app.post("/webhooks/{secret}/generate")
@@ -151,6 +188,33 @@ async def lyrics_callback(secret: str, request: Request) -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
+# The rating endpoint is deliberately open — it is posted from a browser on a
+# signed Spaces URL, and an auth step on a control you use for thirty seconds
+# every morning does not get used. Open is not the same as unlimited, though:
+# without a ceiling a stranger with the URL could rewrite the taste model in an
+# afternoon. Per-IP, in memory, reset hourly — enough to stop that without
+# adding Redis to a single-droplet deployment.
+_RATE_WINDOW_S = 3600
+_RATE_MAX = 120
+_rate_hits: dict[str, list[float]] = {}
+
+
+def _rate_limited(ip: str) -> bool:
+    import time
+    now = time.time()
+    hits = [t for t in _rate_hits.get(ip, []) if now - t < _RATE_WINDOW_S]
+    if len(hits) >= _RATE_MAX:
+        _rate_hits[ip] = hits
+        return True
+    hits.append(now)
+    _rate_hits[ip] = hits
+    if len(_rate_hits) > 4096:            # unbounded dict is its own outage
+        cutoff = now - _RATE_WINDOW_S
+        for key in [k for k, v in _rate_hits.items() if not v or max(v) < cutoff]:
+            _rate_hits.pop(key, None)
+    return False
+
+
 @app.post("/ratings")
 async def submit_rating(request: Request) -> JSONResponse:
     """The field the pipeline cannot fill in for itself.
@@ -160,6 +224,11 @@ async def submit_rating(request: Request) -> JSONResponse:
     Weigh that against the friction of an auth step on a control you need to use
     every morning in under thirty seconds.
     """
+    client_ip = (request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+                 or (request.client.host if request.client else "unknown"))
+    if _rate_limited(client_ip):
+        raise HTTPException(status_code=429, detail="too many ratings; try later")
+
     body = await request.json()
     clip_id = body.get("clip_id")
     rating = body.get("rating")
@@ -202,6 +271,69 @@ def existing_ratings(clip_ids: str = "") -> dict:
             .where(Outcome.clip_id.in_(wanted),
                    Outcome.rating.isnot(None))).all()
     return {"ratings": {str(cid): rating for cid, rating in rows}}
+
+
+@app.get("/files/{key:path}")
+def serve_file(key: str, request: Request) -> Response:
+    """Stream a delivered file out of the database.
+
+    Range support is not optional here. An <audio> element issues a ranged
+    request to seek, and a server that answers 200-with-everything makes the
+    scrub bar dead — the player can only ever play from the start. Chrome will
+    also refuse to show a duration for a non-ranged stream of unknown length.
+    """
+    from ..models import StoredFile
+
+    with session_scope() as s:
+        row = s.query(StoredFile).filter(StoredFile.key == key).one_or_none()
+        if row is None:
+            raise HTTPException(status_code=404, detail="no such file")
+        data, ctype, etag = row.data, row.content_type, row.sha256
+
+    total = len(data)
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Disposition": f'inline; filename="{key.rsplit("/", 1)[-1]}"',
+        # Immutable within its retention window, so let the browser keep it.
+        "Cache-Control": "private, max-age=86400",
+    }
+    if etag:
+        headers["ETag"] = f'"{etag}"'
+        if request.headers.get("if-none-match") == f'"{etag}"':
+            return Response(status_code=304, headers=headers)
+
+    rng = request.headers.get("range")
+    if not rng or not rng.startswith("bytes="):
+        headers["Content-Length"] = str(total)
+        return Response(content=data, media_type=ctype, headers=headers)
+
+    spec = rng[6:].split(",")[0].strip()
+    start_s, _, end_s = spec.partition("-")
+    try:
+        if start_s:
+            start = int(start_s)
+            end = int(end_s) if end_s else total - 1
+        else:
+            # A suffix range: the last N bytes.
+            start, end = max(0, total - int(end_s)), total - 1
+    except ValueError:
+        raise HTTPException(status_code=416, detail="malformed range")
+
+    if start >= total or start > end:
+        return Response(status_code=416,
+                        headers={**headers, "Content-Range": f"bytes */{total}"})
+    end = min(end, total - 1)
+    chunk = data[start:end + 1]
+    headers["Content-Range"] = f"bytes {start}-{end}/{total}"
+    headers["Content-Length"] = str(len(chunk))
+    return Response(content=chunk, status_code=206, media_type=ctype, headers=headers)
+
+
+@app.get("/storage")
+def storage_usage() -> dict:
+    """What the store holds and where it settles. Cheap enough to poll."""
+    from ..retention import usage
+    return usage()
 
 
 @app.get("/ratings/status")

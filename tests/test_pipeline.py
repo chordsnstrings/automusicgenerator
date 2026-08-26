@@ -136,7 +136,8 @@ def test_delivery_falls_back_to_the_filesystem_without_a_bucket(monkeypatch, tmp
     from dailyfive.config import reload_settings
     from dailyfive.storage import LocalStore, open_store
     for var in ("SPACES_KEY", "SPACES_SECRET", "SPACES_BUCKET"):
-        monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv(var, "")
+    monkeypatch.setenv("AUDIO_STORE", "")
     monkeypatch.setenv("WORK_DIR", str(tmp_path))
     reload_settings()
 
@@ -158,6 +159,7 @@ def test_a_configured_bucket_still_wins(monkeypatch):
     monkeypatch.setenv("SPACES_SECRET", "s")
     monkeypatch.setenv("SPACES_BUCKET", "b")
     monkeypatch.setenv("SPACES_ENDPOINT", "https://nyc3.digitaloceanspaces.com")
+    monkeypatch.setenv("AUDIO_STORE", "")
     reload_settings()
     assert type(open_store()).__name__ == "Spaces"
 

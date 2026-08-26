@@ -363,6 +363,36 @@ def cmd_retro(args) -> int:
     return 0
 
 
+def cmd_purge(args) -> int:
+    """Delete stored files past their retention window."""
+    from . import retention
+    init_db()
+    if args.usage:
+        print(json.dumps(retention.usage(), indent=2, default=str))
+        return 0
+    result = retention.purge(dry_run=args.dry_run)
+    print(json.dumps(result, indent=2, default=str))
+    if args.dry_run and result["removed"]:
+        print(f"\n  dry run — {result['removed']} file(s) would be deleted")
+    return 0
+
+
+def cmd_backup(args) -> int:
+    from . import backup
+    init_db()
+    if args.restore_hint:
+        print(backup.restore_hint())
+        return 0
+    if args.local_only:
+        path = backup.dump()
+        print(f"backup written to {path} ({path.stat().st_size / 1e6:.1f} MB)")
+        return 0
+    key = backup.to_storage(keep_local=args.keep)
+    print(f"backup stored at {key}" if key else
+          "backup written locally; upload failed — see the log")
+    return 0
+
+
 def cmd_credits(args) -> int:
     from .providers.suno import SunoClient
     print(f"suno credits: {SunoClient().credits()}")
@@ -384,6 +414,39 @@ def cmd_initdb(args) -> int:
     init_db()
     codex.current()
     print(f"database ready at {settings().database_url}")
+    return 0
+
+
+def cmd_migrate(args) -> int:
+    """Apply pending migrations, or show where the database stands."""
+    from pathlib import Path
+
+    from alembic import command
+    from alembic.config import Config
+    from alembic.runtime.migration import MigrationContext
+
+    from .db import engine
+
+    root = Path(__file__).resolve().parents[2]
+    cfg = Config(str(root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(root / "migrations"))
+
+    if args.action == "status":
+        with engine().connect() as conn:
+            current = MigrationContext.configure(conn).get_current_revision()
+        print(f"database : {settings().database_url}")
+        print(f"revision : {current or 'unmanaged (never migrated)'}")
+        command.heads(cfg)
+        return 0
+    if args.action == "history":
+        command.history(cfg, verbose=True)
+        return 0
+    if args.action == "down":
+        command.downgrade(cfg, args.to or "-1")
+        return 0
+
+    command.upgrade(cfg, args.to or "head")
+    print("migrations applied")
     return 0
 
 
@@ -456,6 +519,17 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--dry-run", action="store_true")
     s.set_defaults(fn=cmd_retro)
 
+    s = sub.add_parser("purge", help="delete stored files past their retention window")
+    s.add_argument("--dry-run", action="store_true")
+    s.add_argument("--usage", action="store_true", help="show what the store holds")
+    s.set_defaults(fn=cmd_purge)
+
+    s = sub.add_parser("backup", help="dump the database and store it")
+    s.add_argument("--local-only", action="store_true")
+    s.add_argument("--keep", type=int, default=7, help="local copies to retain")
+    s.add_argument("--restore-hint", action="store_true")
+    s.set_defaults(fn=cmd_backup)
+
     s = sub.add_parser("credits", help="Suno balance (free to check)")
     s.set_defaults(fn=cmd_credits)
 
@@ -466,6 +540,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("init-db", help="create tables and seed the codex")
     s.set_defaults(fn=cmd_initdb)
+
+    s = sub.add_parser("migrate", help="apply or inspect schema migrations")
+    s.add_argument("action", nargs="?", default="up",
+                   choices=["up", "down", "status", "history"])
+    s.add_argument("--to", help="target revision (default: head)")
+    s.set_defaults(fn=cmd_migrate)
     return p
 
 

@@ -136,6 +136,15 @@ def run_daily(run_date: date | None = None, *, resume: bool = True,
         _fail(run_id, str(exc)[:2000])
         raise
 
+    try:
+        from . import retention
+        purged = retention.purge()
+        if purged["removed"]:
+            log.info("retention: removed %d expired file(s), %.1f MB",
+                     purged["removed"], purged["freed_mb"])
+    except Exception:
+        log.exception("retention pass failed (the run itself is fine)")
+
     summary = archivist.record_run(run_id)
     try:
         learned = archivist.apply_learning()
@@ -500,7 +509,8 @@ def _phase_ship(run_id: int, cfg, *, skip_art: bool = False) -> RunPhase:
         for f in folder.iterdir():
             if f.name == "source.wav" or not f.is_file():
                 continue
-            keys[f.name] = spaces.upload(f, spaces.key_for(date_key, slug, f.name))
+            keys[f.name] = spaces.upload(f, spaces.key_for(date_key, slug, f.name),
+                                         clip_id=clip_id, run_id=run_id)
 
         with session_scope() as s:
             s.get(Clip, clip_id).spaces_key = spaces.key_for(date_key, slug)
@@ -532,13 +542,15 @@ def _phase_ship(run_id: int, cfg, *, skip_art: bool = False) -> RunPhase:
         "run_date": date_key, "songs": manifest,
         "generated_at": utcnow().isoformat(),
         "learning_signal": status["signal"],
-    }, indent=2, default=str), spaces.key_for(date_key, "manifest.json"))
+    }, indent=2, default=str), spaces.key_for(date_key, "manifest.json"),
+        run_id=run_id)
 
     spaces.put_text(
         day_page(run_date, page_songs, api_base=cfg.public_base_url,
                  learning_note=f"{status['rated']}/{status['shipped']} rated so far"),
         spaces.key_for(date_key, "index.html"),
-        content_type="text/html; charset=utf-8", public=cfg.spaces_public_index)
+        content_type="text/html; charset=utf-8", public=cfg.spaces_public_index,
+        run_id=run_id)
 
     with session_scope() as s:
         run = s.get(Run, run_id)

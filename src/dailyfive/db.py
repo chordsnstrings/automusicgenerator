@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -13,6 +14,8 @@ from sqlalchemy.pool import StaticPool
 
 from .config import settings
 from .models import Base
+
+log = logging.getLogger(__name__)
 
 _engine: Engine | None = None
 _Session: sessionmaker[Session] | None = None
@@ -65,8 +68,56 @@ def _ensure_sqlite_dir(url: str) -> None:
         parent.mkdir(parents=True, exist_ok=True)
 
 
-def init_db() -> None:
-    Base.metadata.create_all(engine())
+def init_db(*, migrate: bool = True) -> None:
+    """Bring the schema up to date.
+
+    Uses Alembic rather than ``create_all`` because create_all only ever adds
+    missing tables — it will not add a column to a table that already exists,
+    so a schema change would silently not land on any database that had been
+    used once. That failure is invisible until something reads the column.
+
+    A database that predates migrations is *stamped* rather than migrated: its
+    tables already match the baseline, so replaying the baseline would fail on
+    "table already exists". Stamping records where it is and lets the next
+    migration apply normally.
+    """
+    url = settings().database_url
+    if not migrate or ":memory:" in url or "mode=memory" in url:
+        # An in-memory database lives inside one connection, and Alembic opens
+        # its own — so migrating one would create the tables in a throwaway
+        # database and leave the real one empty, with "no such table" as the
+        # only clue. Nothing to migrate *from* in memory anyway.
+        Base.metadata.create_all(engine())
+        return
+
+    from alembic import command
+    from alembic.config import Config
+    from alembic.runtime.migration import MigrationContext
+    from sqlalchemy import inspect
+
+    root = Path(__file__).resolve().parents[2]
+    ini = root / "alembic.ini"
+    if not ini.is_file():
+        # Installed without the migration tree (a wheel, say). Fall back rather
+        # than refuse to start.
+        log.warning("alembic.ini not found at %s — creating tables directly", ini)
+        Base.metadata.create_all(engine())
+        return
+
+    cfg = Config(str(ini))
+    cfg.set_main_option("script_location", str(root / "migrations"))
+
+    eng = engine()
+    with eng.connect() as conn:
+        current = MigrationContext.configure(conn).get_current_revision()
+        has_tables = bool(inspect(conn).get_table_names())
+
+    if current is None and has_tables:
+        log.info("adopting an existing database into migrations")
+        command.stamp(cfg, "head")
+        return
+
+    command.upgrade(cfg, "head")
 
 
 @contextmanager

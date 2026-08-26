@@ -13,7 +13,7 @@ import enum
 from datetime import date, datetime, timezone
 
 from sqlalchemy import (JSON, Boolean, Date, DateTime, Enum, Float, ForeignKey,
-                        Integer, String, Text, UniqueConstraint)
+                        Integer, LargeBinary, String, Text, UniqueConstraint)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -297,6 +297,40 @@ class AgentCall(Base):
     chars_in: Mapped[int] = mapped_column(Integer, default=0)
     chars_out: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class StoredFile(Base):
+    """A delivered file, kept in the database with an expiry.
+
+    Audio lives here rather than in object storage because that is how this
+    deployment was asked to work: one place to look, one retention rule, one
+    thing to back up. It costs more per gigabyte than Spaces and it makes
+    backups bigger, which is the trade being made deliberately — at 30 days and
+    five songs a day it is roughly 8 GB of audio, which a 30 GB cluster carries
+    with room to spare.
+
+    ``expires_at`` is set on write, not computed on read, so the retention
+    window is a fact about each row rather than a rule someone has to remember
+    to apply. Deletion is a job that reads this column and nothing else.
+    """
+    __tablename__ = "stored_files"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    key: Mapped[str] = mapped_column(String(400), unique=True, index=True)
+    run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("runs.id", ondelete="SET NULL"), index=True)
+    clip_id: Mapped[int | None] = mapped_column(
+        ForeignKey("clips.id", ondelete="SET NULL"), index=True)
+
+    kind: Mapped[str] = mapped_column(String(24), index=True)   # wav | mp3 | cover | text
+    content_type: Mapped[str] = mapped_column(String(120), default="application/octet-stream")
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    sha256: Mapped[str | None] = mapped_column(String(64))
+    data: Mapped[bytes] = mapped_column(LargeBinary)
+
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

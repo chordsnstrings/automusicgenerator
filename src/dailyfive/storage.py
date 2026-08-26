@@ -8,6 +8,7 @@ mirrored the moment it exists.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import mimetypes
 import shutil
@@ -54,7 +55,8 @@ class LocalStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
-    def upload(self, local: Path | str, key: str, *, public: bool = False) -> str:
+    def upload(self, local: Path | str, key: str, *, public: bool = False,
+               clip_id: int | None = None, run_id: int | None = None) -> str:
         local = Path(local)
         if not local.is_file():
             raise ProviderError("local", f"nothing to upload at {local}", retryable=False)
@@ -63,7 +65,8 @@ class LocalStore:
         return key
 
     def put_text(self, body: str, key: str, *, content_type: str = "application/json",
-                 public: bool = False) -> str:
+                 public: bool = False, clip_id: int | None = None,
+                 run_id: int | None = None) -> str:
         self._path(key).write_text(body, encoding="utf-8")
         return key
 
@@ -84,17 +87,147 @@ class LocalStore:
                                 retryable=False) from exc
 
 
+class DatabaseStore:
+    """Delivered files kept as rows, with an expiry stamped on write.
+
+    Same interface as Spaces and LocalStore, so nothing above this cares which
+    is in use. Two things are genuinely different and worth knowing:
+
+    ``signed_url`` returns an application URL rather than a storage URL, because
+    the bytes are only reachable through the app. That route supports Range
+    requests, without which an audio element cannot seek.
+
+    Writes carry ``expires_at``. The retention window is therefore a fact about
+    each row rather than a rule a job has to remember — the purge reads that
+    column and nothing else, so a row can never outlive its window by being
+    missed.
+    """
+
+    def __init__(self):
+        cfg = settings()
+        self.bucket = "database"
+        self.prefix = cfg.spaces_prefix
+        self.public_index = False
+        self.retention_days = cfg.retention_days
+
+    def key_for(self, run_date: str, *parts: str) -> str:
+        return "/".join([self.prefix, run_date, *[p.strip("/") for p in parts if p]])
+
+    # ── writes ───────────────────────────────────────────────────────────────
+    def upload(self, local: Path | str, key: str, *, public: bool = False,
+               clip_id: int | None = None, run_id: int | None = None) -> str:
+        local = Path(local)
+        if not local.is_file():
+            raise ProviderError("database", f"nothing to upload at {local}",
+                                retryable=False)
+        return self._put(local.read_bytes(), key,
+                         mimetypes.guess_type(local.name)[0] or "application/octet-stream",
+                         clip_id=clip_id, run_id=run_id)
+
+    def put_text(self, body: str, key: str, *, content_type: str = "application/json",
+                 public: bool = False, clip_id: int | None = None,
+                 run_id: int | None = None) -> str:
+        return self._put(body.encode("utf-8"), key, content_type,
+                         clip_id=clip_id, run_id=run_id)
+
+    def _put(self, data: bytes, key: str, content_type: str, *,
+             clip_id: int | None, run_id: int | None) -> str:
+        from datetime import timedelta
+
+        from .db import session_scope
+        from .models import StoredFile, utcnow
+
+        digest = hashlib.sha256(data).hexdigest()
+        expires = utcnow() + timedelta(days=self.retention_days)
+        kind = _kind_for(key, content_type)
+
+        with session_scope() as s:
+            row = s.query(StoredFile).filter(StoredFile.key == key).one_or_none()
+            if row is None:
+                row = StoredFile(key=key)
+                s.add(row)
+            row.data = data
+            row.content_type = content_type
+            row.size_bytes = len(data)
+            row.sha256 = digest
+            row.kind = kind
+            row.expires_at = expires
+            if clip_id is not None:
+                row.clip_id = clip_id
+            if run_id is not None:
+                row.run_id = run_id
+        log.info("stored %s in database (%.1f MB, expires %s)",
+                 key, len(data) / 1e6, expires.date())
+        return key
+
+    # ── reads ────────────────────────────────────────────────────────────────
+    def signed_url(self, key: str, *, expires: int = 0) -> str:
+        base = settings().public_base_url or ""
+        return f"{base}/files/{key}"
+
+    def fetch(self, key: str) -> tuple[bytes, str] | None:
+        from .db import session_scope
+        from .models import StoredFile
+        with session_scope() as s:
+            row = s.query(StoredFile).filter(StoredFile.key == key).one_or_none()
+            if row is None:
+                return None
+            return row.data, row.content_type
+
+    def exists(self, key: str) -> bool:
+        from .db import session_scope
+        from .models import StoredFile
+        with session_scope() as s:
+            return s.query(StoredFile.id).filter(StoredFile.key == key).first() is not None
+
+    def check_access(self) -> None:
+        from .db import session_scope
+        from .models import StoredFile
+        try:
+            with session_scope() as s:
+                s.query(StoredFile.id).limit(1).all()
+        except Exception as exc:
+            raise ProviderError("database", f"stored_files unreachable: {exc}",
+                                retryable=False) from exc
+
+
+def _kind_for(key: str, content_type: str) -> str:
+    name = key.rsplit("/", 1)[-1].lower()
+    if name.endswith(".wav"):
+        return "wav"
+    if name.endswith(".mp3"):
+        return "mp3"
+    if name.endswith((".jpg", ".jpeg", ".png", ".webp")):
+        return "cover"
+    if content_type.startswith("text/") or name.endswith((".json", ".txt", ".lrc", ".html")):
+        return "text"
+    return "other"
+
+
 def open_store():
     """Spaces when it is configured, the filesystem when it is not.
 
     Chosen once per run so the whole run agrees about where things went.
     """
     cfg = settings()
+    choice = cfg.audio_store
+
+    if choice == "database":
+        return DatabaseStore()
+    if choice == "spaces" or (choice == "auto" and cfg.spaces_bucket):
+        if cfg.spaces_bucket and cfg.spaces_key and cfg.spaces_secret:
+            return Spaces()
+        log.error("AUDIO_STORE=spaces but SPACES_* is incomplete — falling back "
+                  "to the filesystem, which is not a place to keep a catalogue")
+        return LocalStore()
+    if choice == "local":
+        return LocalStore()
+
     if cfg.spaces_bucket and cfg.spaces_key and cfg.spaces_secret:
         return Spaces()
-    log.warning("no Spaces bucket configured — delivering to %s instead. "
-                "Suno deletes its own copies after 15 days, so set SPACES_* "
-                "before this matters.", cfg.work_dir / "delivered")
+    log.warning("no delivery target configured — writing to %s. Suno deletes "
+                "its own copies after 15 days, so this is not somewhere to keep "
+                "a catalogue.", cfg.work_dir / "delivered")
     return LocalStore()
 
 
@@ -118,7 +251,8 @@ class Spaces:
     def key_for(self, run_date: str, *parts: str) -> str:
         return "/".join([self.prefix, run_date, *[p.strip("/") for p in parts if p]])
 
-    def upload(self, local: Path | str, key: str, *, public: bool = False) -> str:
+    def upload(self, local: Path | str, key: str, *, public: bool = False,
+               clip_id: int | None = None, run_id: int | None = None) -> str:
         local = Path(local)
         if not local.is_file():
             raise ProviderError(PROVIDER, f"nothing to upload at {local}", retryable=False)
@@ -135,7 +269,8 @@ class Spaces:
         return key
 
     def put_text(self, body: str, key: str, *, content_type: str = "application/json",
-                 public: bool = False) -> str:
+                 public: bool = False, clip_id: int | None = None,
+                 run_id: int | None = None) -> str:
         extra = {"ContentType": content_type}
         if public:
             extra["ACL"] = "public-read"

@@ -65,11 +65,12 @@ class FakeSpaces:
     def key_for(self, run_date, *parts):
         return "/".join([self.prefix, run_date, *[p.strip("/") for p in parts if p]])
 
-    def upload(self, local, key, public=False):
+    def upload(self, local, key, public=False, clip_id=None, run_id=None):
         self.objects[key] = str(local)
         return key
 
-    def put_text(self, body, key, content_type="application/json", public=False):
+    def put_text(self, body, key, content_type="application/json", public=False,
+                 clip_id=None, run_id=None):
         self.objects[key] = body
         return key
 

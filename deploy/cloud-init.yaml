@@ -1,0 +1,56 @@
+#cloud-config
+# Base provisioning for The Daily Five. Everything here is idempotent and
+# machine-readable on purpose: a droplet you can rebuild from a file is one you
+# can recover; a droplet configured by hand is one you cannot.
+package_update: true
+package_upgrade: true
+
+packages:
+  - python3
+  - python3-venv
+  - python3-pip
+  - ffmpeg                 # QC measurement and MP3 encoding both depend on this
+  - postgresql-client      # for pg_dump backups against the managed cluster
+  - nginx
+  - certbot
+  - python3-certbot-nginx
+  - git
+  - ufw
+  - fail2ban
+  - unattended-upgrades
+
+users:
+  - name: dailyfive
+    system: false
+    shell: /bin/bash
+    sudo: false            # the service account never needs root
+    lock_passwd: true
+
+write_files:
+  - path: /etc/sysctl.d/99-dailyfive.conf
+    content: |
+      # A single small droplet running one daily job — keep the network stack
+      # boring and the OOM killer away from the worker.
+      vm.overcommit_memory = 1
+      net.ipv4.tcp_syncookies = 1
+  - path: /etc/systemd/journald.conf.d/dailyfive.conf
+    content: |
+      [Journal]
+      # Logs are the only record of an unattended run that went wrong.
+      SystemMaxUse=512M
+      MaxRetentionSec=30day
+
+runcmd:
+  - [ mkdir, -p, /opt/dailyfive/work, /opt/dailyfive/releases ]
+  - [ chown, -R, "dailyfive:dailyfive", /opt/dailyfive ]
+  - [ sysctl, --system ]
+  # Only SSH and HTTP(S) — Postgres is reached over the private network.
+  - [ ufw, default, deny, incoming ]
+  - [ ufw, default, allow, outgoing ]
+  - [ ufw, allow, OpenSSH ]
+  - [ ufw, allow, "80/tcp" ]
+  - [ ufw, allow, "443/tcp" ]
+  - [ ufw, --force, enable ]
+  - [ systemctl, enable, --now, fail2ban ]
+  - [ systemctl, restart, systemd-journald ]
+  - [ bash, -lc, "echo 'dailyfive base provisioning complete' > /var/log/dailyfive-cloud-init.done" ]
