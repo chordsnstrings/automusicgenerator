@@ -115,7 +115,7 @@ pre{background:var(--well);border:1px solid var(--rule);border-radius:4px;
 """
 
 NAV = [("/", "Overview"), ("/runs", "Runs"), ("/agents", "Agents"),
-       ("/codex", "Codex"), ("/files", "Files")]
+       ("/genres", "Genres"), ("/codex", "Codex"), ("/files", "Files")]
 
 # Progressive enhancement, and it must stay that way: every rating form posts and
 # redirects on its own. All this buys is not reloading the page — which matters

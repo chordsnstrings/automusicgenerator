@@ -4,7 +4,7 @@ An unattended pipeline that produces **five finished songs every day** — all
 full-length — as WAV, MP3 and timestamped lyrics, into a dated folder on
 DigitalOcean Spaces.
 
-Eleven agents across five phases: **sense → write → render → judge → ship**,
+Twelve agents across five phases: **sense → write → render → judge → ship**,
 with a feedback loop that makes tomorrow's run different from today's.
 
 ```
@@ -57,7 +57,8 @@ The day page shows five songs. The **console** shows the machine that made them:
 |---|---|
 | `/` | the latest shipped set, with a player and a rating control; runs, learning signal, which brain backs which role |
 | `/runs/<date>` | the themes the Scout found and from which feed, every brief, every job, **all 14 candidates including the nine that did not ship and exactly why**, every brain call with timing, and a player plus rating control for each delivered song |
-| `/agents` | all eleven roles, their brains, activity and failures |
+| `/agents` | all twelve roles, their brains, activity and failures |
+| `/genres` | which genre is working: mean rating and sample count per family, today's slate and why each family was picked, and the closed vocabulary behind it |
 | `/codex` | the Style Codex, persona cast, what it has learned, version history |
 | `/files` | everything delivered, by day — this is where you listen to the back catalogue |
 
@@ -66,9 +67,9 @@ callbacks, so there is still one public surface to secure.
 
 ## The two things worth knowing up front
 
-**Four of the eleven agents have no language model in them at all.** The
-Conductor, the QC Engineer, and the daily halves of the Packager and Archivist
-are plain code. That is what makes this cheap enough to run 365 days a year and
+**Five of the twelve agents have no language model in them at all.** The
+Genre Director, the Conductor, the QC Engineer, and the daily halves of the
+Packager and Archivist are plain code. That is what makes this cheap enough to run 365 days a year and
 reliable enough to run unattended. Audio quality is decided by *measurement*,
 never judgment — put a model where a measurement belongs and you get a system
 that hallucinates that the audio is fine.

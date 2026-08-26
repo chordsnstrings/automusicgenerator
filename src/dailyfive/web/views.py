@@ -8,9 +8,10 @@ from datetime import date, timedelta
 
 from sqlalchemy import func, select
 
-from .. import ledger, llm
+from .. import genres, ledger, llm
 from ..archivist import aggregate, learning_status
 from ..codex import current as current_codex
+from ..codex import is_negation
 from ..config import settings
 from ..db import session_scope
 from ..models import (AgentCall, Brief, Clip, CodexVersion, Decision, Job,
@@ -31,6 +32,17 @@ PHASE_LABEL = {RunPhase.SENSED: "sense", RunPhase.BRIEFED: "brief",
 ROSTER = [
     ("Scout", "scout", "trend + sentiment signals from seven free feeds",
      "making music for a mood that peaked three weeks ago"),
+    # No language model, and the seat on this page is the honest way to say so.
+    # Scoring what worked is a GROUP BY with a sample floor; allocating the day
+    # is UCB1 with a cap, and a deterministic slate is the only kind the console
+    # can explain — "country got 3 because its mean is 7.4 over 12 rated songs
+    # and the explore floor is 2 of 7" is a sentence a model asked to allocate
+    # could not be held to twice. The one part of the job that is judgement —
+    # deciding that a spec is country > country-soul — belongs to the Music
+    # Director, who is already reading the specification when the decision is
+    # made, and costs no extra call.
+    ("Genre Director", None, "closed vocabulary; allocates the day's slate from your ratings",
+     "learning nothing about genre because every style string is unique prose"),
     ("Music Director", "director", "owns the Style Codex; themes become checkable spec",
      "prompts made of adjectives instead of specifications"),
     ("A&R", "anr", "one brief per spec, personas assigned, diversity enforced",
@@ -306,6 +318,8 @@ def overview() -> str:
         stats(("runs", st["runs"]), ("clips", st["clips"]), ("shipped", st["shipped"]),
               ("rated", st["rated"]), ("credits", spent or "—")),
         f'<div class="note"><span>Learning signal</span>{esc(st["signal"])}</div>',
+        f'<div class="note"><span>Genres</span>{esc(_genre_line())} '
+        f'<a href="/genres">See the genre record</a>.</div>',
         today,
         "<h2>Brains</h2>", _brain_table(),
         "<h2>Recent runs</h2>",
@@ -314,6 +328,31 @@ def overview() -> str:
               num_cols={2, 3, 4, 5, 6}),
     ]
     return page("Overview", "".join(body), "/", script=RATE_JS)
+
+
+def _genre_line() -> str:
+    """One computed sentence, because the daily habit lives on this page.
+
+    Open the console, play the five, rate them — so the one thing a rating now
+    feeds has to be visible from where the rating is given, rather than behind
+    a nav link nobody has a reason to click.
+    """
+    data = genres.scores()
+    fams, ranked = data["families"], data["ranked"]
+    if ranked:
+        lead = max(ranked, key=lambda f: (fams[f]["taste"], f))
+        return (f"{lead} leads at {fams[lead]['taste']:.1f} over "
+                f"{fams[lead]['rated_n']} rated briefs, of {len(ranked)} ranked "
+                f"families.")
+    if data["rated_briefs"]:
+        return (f"{data['rated_briefs']} rated briefs and no family has reached "
+                f"{genres.GENRE_MIN_RATED}, so nothing is ranked yet.")
+    if data["briefed_families"]:
+        return (f"{len(data['briefed_families'])} families briefed and none "
+                f"rated — your rating is the only thing that ranks them.")
+    return (f"Nothing briefed yet. The vocabulary holds "
+            f"{len(genres.FAMILIES)} families and {len(genres.SPECIFICS)} "
+            f"specific genres.")
 
 
 def _todays_songs(s) -> str:
@@ -701,7 +740,7 @@ def agents_page() -> str:
                      f'<span class="mini">{esc(prevents)}</span>'])
 
     # Appended after the roster loop rather than folded into ROSTER, which is
-    # the eleven agents. Cover art is an image model, not one of them — but it
+    # the roster itself. Cover art is an image model, not one of them — but it
     # is the one integration whose absence a person could previously only learn
     # by reading five ERROR lines a day, and this is the page an operator opens
     # to find out what is wired up.
@@ -729,8 +768,8 @@ def agents_page() -> str:
 
     return page("Agents", "".join([
         "<h1>Agents</h1>",
-        f'<p class="sub">Eleven roles. <b>{no_brain} of them have no language model '
-        f'at all</b> — that is what makes this cheap enough to run every day and '
+        f'<p class="sub">{len(ROSTER)} roles. <b>{no_brain} of them have no '
+        f'language model at all</b> — that is what makes this cheap enough to run every day and '
         f'reliable enough to run unattended. Audio quality is decided by '
         f'measurement, never judgment.</p>',
         table(["Agent", "Brain", "Does", "30 days", "Fails", "Prevents"], rows),
@@ -764,9 +803,29 @@ def codex_page() -> str:
 
     learned = cx.body.get("learned", {})
     styles = learned.get("style_scores") or {}
-    top = sorted(styles.items(), key=lambda kv: -kv[1])[:12]
+    # Filtered here as well as in brief_context(), and for the same reason: the
+    # live codex reached v3 with a learned table that was entirely "no synths"
+    # 6.11 and "no pads" 6.11, and a version is never rewritten in place, so
+    # those two rows are in the record forever. Rendering them under a heading
+    # saying they were scored by outcome would make this page teach a reader
+    # what the prompt was about to teach the Director. Dropped rows are counted
+    # rather than silently hidden — a reader comparing this against the stored
+    # body should be able to see where the difference went.
+    scoreable = {k: v for k, v in styles.items() if not is_negation(k)}
+    dropped = len(styles) - len(scoreable)
+    top = sorted(scoreable.items(), key=lambda kv: -kv[1])[:12]
     learn_rows = [[esc(k), f'<span class="num">{v:.2f}</span>', bar(v, 10)]
                   for k, v in top]
+
+    genre_scored = learned.get("genre_scores") or {}
+    genre_rows = [[
+        f"<b>{esc(label)}</b>",
+        f'<span class="num">{float(entry.get("mean", 0)):.2f}</span>',
+        f'<span class="mini">over {int(entry.get("n", 0))} rated briefs</span>',
+        bar(float(entry.get("mean", 0)), 10),
+    ] for label, entry in sorted(genre_scored.items(),
+                                 key=lambda kv: -float(kv[1].get("mean", 0)))
+        if isinstance(entry, dict)]
 
     stats_now = aggregate(60)
     return page("Codex", "".join([
@@ -792,6 +851,20 @@ def codex_page() -> str:
         table(["Style descriptor", "Score", ""], learn_rows,
               empty="no descriptor has enough observations behind it yet",
               num_cols={1}),
+        (f'<p class="sub">{dropped} stored descriptor'
+         f'{"" if dropped == 1 else "s"} not shown: they state what a record '
+         f'does not have, and an absence cannot be credited with an outcome in '
+         f'either direction. They are still in the stored body — a codex '
+         f'version is never rewritten in place — and they reach neither this '
+         f'table nor the Director.</p>' if dropped else ""),
+        "<h2>Genre, scored by your ratings</h2>",
+        f'<p class="sub">Counted over distinct briefs, never clips, and shown '
+        f'only once {genres.GENRE_MIN_RATED} rated briefs sit behind the label. '
+        f'The full record, the day\'s slate and what it is waiting for are on '
+        f'<a href="/genres">Genres</a>.</p>',
+        table(["Genre", "Your mean", "Sample", ""], genre_rows,
+              empty=f"no genre has {genres.GENRE_MIN_RATED} rated briefs behind "
+                    f"it yet", num_cols={1}),
         *([f'<h2>Avoid list</h2><div class="note"><span>observed to fail</span>'
            f'{esc(", ".join(learned["avoid"]))}</div>'] if learned.get("avoid") else []),
         "<h2>Tempo bands and forms</h2>",
@@ -803,6 +876,421 @@ def codex_page() -> str:
         table(["Version", "When", "Change", "Rationale"], hist_rows,
               empty="only the seed version exists"),
     ]), "/codex")
+
+
+# ── genres ───────────────────────────────────────────────────────────────────
+# Not a section on /codex. That page is a document viewer — the Director's
+# working paper, versioned and never edited in place. "Which genre is working"
+# is a daily question needing four tables and a time axis, and half of what it
+# shows (today's slate, the explore ledger, the chart split) is run data rather
+# than codex data.
+CONFOUND = (
+    "Genre is entangled with persona and this is not a controlled experiment. "
+    "Vale sings restrained alt-pop, Rook electronic soul, Marisol warm uptempo "
+    "live-band, and a spec is assigned its persona after it has its genre — so "
+    "\"country scores 7.4\" may be \"Marisol scores 7.4\", and nothing here can "
+    "tell those apart. There is one rater. They see the title, the artwork and "
+    "the persona before scoring, and they know which songs the studio was "
+    "betting on. Nothing is blinded, nothing is randomised, and the slate goes "
+    "to the least-sampled families rather than to a control group. Read these "
+    "numbers as a record of what you liked, not as a finding about genre."
+)
+
+STANCE_PILL = {"exploit": "ok", "hold": "dim", "explore": "cool"}
+
+
+def _genre_mean_cell(row: dict) -> str:
+    """The mean, or a dash and the distance left to the bar. Never a bare number.
+
+    Today's /codex renders "no synths 6.11" under a heading saying it was
+    observed to score well, with no sample count anywhere on the row. That is
+    how an average over two decisions comes to look like a finding, and a genre
+    label repeats by construction, so the same number here would look solid
+    sooner. The count is part of the value, not a footnote to it.
+    """
+    if row["taste"] is not None:
+        return (f'<b>{row["taste"]:.1f}</b><br><span class="mini">over '
+                f'{row["rated_n"]} rated briefs</span>')
+    return (f'—<br><span class="mini">{row["rated_n"]} of {genres.GENRE_MIN_RATED} '
+            f'rated briefs</span>')
+
+
+def _genre_delta_cell(row: dict) -> str:
+    if row.get("delta") is None:
+        return '<span class="mini">not enough history</span>'
+    return f'{row["delta"]:+.1f}'
+
+
+def _genre_row(label: str, row: dict, trend_row: dict) -> list[str]:
+    rel = row["reliability"]
+    return [
+        f"<b>{esc(label)}</b>",
+        f'<span class="num">{row["briefed"]}</span>',
+        f'<span class="num">{row["shipped"]}</span>',
+        f'<span class="num">{row["rated_n"]}</span>',
+        _genre_mean_cell(row),
+        (f'<span class="num">{row["producer"]:.1f}</span>' if row["producer"] is not None
+         else '<span class="mini">—</span>'),
+        (f'<span class="num">{rel:.0%}</span><br>'
+         f'<span class="mini">of {row["qc_measured"]} clips</span>'
+         if rel is not None else '<span class="mini">—</span>'),
+        _genre_delta_cell(trend_row),
+        f'<span class="mini">{esc(row["last_briefed"] or "never")}</span>',
+    ]
+
+
+def _genre_headline(data: dict, learn: dict) -> str:
+    fams = data["families"]
+    tried = len(data["briefed_families"])
+    ranked = data["ranked"]
+    labelled = sum(r["briefed"] for r in fams.values())
+    n_fam, n_spec = len(genres.FAMILIES), len(genres.SPECIFICS)
+
+    if not tried:
+        return (f"No genre has been briefed yet. The studio can name {n_fam} "
+                f"families and {n_spec} specific genres and has recorded none of "
+                f"them. The first run fills this page.")
+    if not ranked:
+        return (f"{tried} of {n_fam} families briefed across {labelled} briefs, "
+                f"and nothing here is ranked: {learn['rated']} of "
+                f"{learn['shipped']} shipped songs carry your rating, so the "
+                f"only column with numbers in it is the Producer's own score. "
+                f"{learn['signal']}.")
+
+    order = sorted(ranked, key=lambda f: (-fams[f]["taste"], f))
+    lead = order[0]
+    if len(order) == 1:
+        head = (f"{lead} is the only ranked family: {fams[lead]['taste']:.1f} "
+                f"across {fams[lead]['rated_n']} rated briefs, with nothing yet "
+                f"to compare it against. ")
+    else:
+        lag = order[-1]
+        head = (f"{lead} is ahead: {fams[lead]['taste']:.1f} across "
+                f"{fams[lead]['rated_n']} rated briefs. {lag} trails at "
+                f"{fams[lag]['taste']:.1f} across {fams[lag]['rated_n']}. ")
+    return head + (f"{tried - len(ranked)} of {tried} briefed families are not "
+                   f"ranked — a family needs {genres.GENRE_MIN_RATED} rated "
+                   f"briefs behind it before an average means anything.")
+
+
+def _genre_waiting(data: dict, cfg) -> str:
+    """The rule and the current count. Never an ETA.
+
+    An ETA needs an assumption about tomorrow's slate and tomorrow's ratings,
+    and assuming a track record is the thing this page exists not to do.
+    """
+    fams = data["families"]
+    bar_n = genres.GENRE_MIN_RATED
+    close = [f for f in fams if fams[f]["taste"] is None and fams[f]["rated_n"]]
+    if close:
+        best = max(close, key=lambda f: (fams[f]["rated_n"], f))
+        return (f"A family is ranked once {bar_n} rated briefs sit behind it. "
+                f"The closest is {best} with {fams[best]['rated_n']}.")
+    labelled = sum(r["briefed"] for r in fams.values())
+    if labelled:
+        return (f"A family is ranked once {bar_n} rated briefs sit behind it. "
+                f"{labelled} briefs carry a genre and none of them has been "
+                f"rated, so nothing is close. Rating the songs on the overview "
+                f"is the only thing that moves this page.")
+    return (f"A family is ranked once {bar_n} rated briefs sit behind it. "
+            f"Nothing has been briefed, so nothing is close. The next run "
+            f"allocates {cfg.total_briefs} briefs across the least-sampled "
+            f"families, which today is all {len(genres.FAMILIES)} of them.")
+
+
+def _genre_slate_block(latest: tuple[date, dict] | None, cfg) -> tuple[str, str]:
+    """Today's slate if a run recorded one, otherwise the one the next run gets.
+
+    Computing it rather than showing an empty box is what makes the page real
+    on day one: the allocator is deterministic, so the slate shown is the slate
+    that would be handed over, and an all-explore slate is an honest thing to
+    look at. It is labelled as unrun, because a plan is not a record.
+    """
+    if latest is not None:
+        run_date, ledger_notes = latest
+        rows = ledger_notes.get("slate") or []
+        today = run_date == date.today()
+        heading = "Today's slate" if today else f"The slate of {run_date.isoformat()}"
+        caption = (f"Recorded on {run_date.isoformat()}, in the same write as "
+                   f"the briefs it allocated — a slate persisted without them "
+                   f"would be a plan nothing carried out.")
+    else:
+        rows = genres.slate(cfg.total_briefs)
+        heading = "The next slate"
+        caption = ("No run has recorded a slate yet. This is the slate the next "
+                   "run would be given — the allocator is deterministic, so it "
+                   "is the same one it will get if nothing is rated first.")
+
+    body = [[
+        f"<b>{esc(r.get('genre_family'))}</b>",
+        f'<span class="num">{r.get("specs")}</span>',
+        pill(str(r.get("stance") or "explore"),
+             STANCE_PILL.get(r.get("stance"), "cool")),
+        (f'{r["mean"]:.1f} <span class="mini">n={r.get("n", 0)}</span>'
+         if r.get("mean") is not None else
+         f'— <span class="mini">n={r.get("n", 0)}</span>'),
+        (f'+{r["bonus"]:.3f}' if r.get("bonus") is not None
+         else '<span class="mini">—</span>'),
+        f'<span class="mini">{esc(r.get("why") or r.get("basis") or "")}</span>',
+    ] for r in rows]
+
+    explore = sum(int(r.get("specs") or 0) for r in rows if r.get("stance") == "explore")
+    total = sum(int(r.get("specs") or 0) for r in rows)
+    if total and explore == total:
+        floor_line = (f"Every one of these {total} briefs is exploration: "
+                      f"{explore} of {total} go to families with no evidence "
+                      f"behind them. That is not a strategy, it is the absence "
+                      f"of one, and it is the honest place to start.")
+    elif total:
+        floor_line = (f"{explore} of {total} briefs are exploration, against a "
+                      f"floor of {cfg.genre_explore_briefs}. The floor is what "
+                      f"keeps the chart, the Scout, the Director and the codex "
+                      f"from being the only things that talk to each other.")
+    else:
+        floor_line = ""
+
+    return heading, "".join([
+        f'<p class="sub">{esc(caption)}</p>',
+        table(["Family", "Songs", "Stance", "Observed", "Uncertainty", "Why picked"],
+              body, empty="no slate — the allocator returned nothing",
+              num_cols={1}),
+        (f'<p class="sub">{esc(floor_line)}</p>' if floor_line else ""),
+    ])
+
+
+def _genre_history(s, days: int = 30) -> str:
+    since = date.today() - timedelta(days=days)
+    mix = s.execute(
+        select(Run.run_date, Brief.genre_family, func.count(Brief.id))
+        .join(Brief, Brief.run_id == Run.id)
+        .where(Run.run_date >= since)
+        .group_by(Run.run_date, Brief.genre_family)).all()
+    notes = dict(s.execute(
+        select(Run.run_date, Run.notes).where(Run.run_date >= since)).all())
+
+    by_day: dict[date, dict[str | None, int]] = {}
+    for run_date, family, count in mix:
+        by_day.setdefault(run_date, {})[family] = count
+
+    rows = []
+    for run_date in sorted(by_day, reverse=True):
+        counts = by_day[run_date]
+        total = sum(counts.values())
+        cells = "".join(
+            f'<div><span class="mini">{esc(fam or "no genre")} {n}</span>'
+            f"{bar(n, total)}</div>"
+            for fam, n in sorted(counts.items(), key=lambda kv: (-kv[1], str(kv[0]))))
+        slate = ((notes.get(run_date) or {}).get("genre") or {}).get("slate") or []
+        explore = sum(int(r.get("specs") or 0) for r in slate
+                      if r.get("stance") == "explore")
+        rows.append([
+            f'<a class="q" href="/runs/{run_date.isoformat()}">{run_date.isoformat()}</a>',
+            f'<span class="num">{total}</span>',
+            cells,
+            (f'<span class="num">{explore}</span>' if slate
+             else '<span class="mini">—</span>'),
+            f'<span class="num">{counts.get(None, 0)}</span>',
+        ])
+    return table(["Date", "Briefs", "Mix", "Explore", "No genre"], rows,
+                 empty=f"no briefs in the last {days} days",
+                 num_cols={1, 3, 4})
+
+
+def _genre_external(latest_scout: tuple[date, dict] | None) -> str:
+    """What the outside feeds said, with the two Apple scopes kept apart."""
+    if latest_scout is None:
+        return ('<div class="note"><span>Outside evidence</span>No run has '
+                'fetched a chart yet. External feeds pick which families are '
+                'live candidates; they never produce a score, and the ratings '
+                'above are the only thing that ranks anything.</div>')
+    run_date, ext = latest_scout
+    current = ext.get("current") or {}
+    catalogue = ext.get("catalogue") or {}
+    deezer = ext.get("deezer") or {}
+    sources = ", ".join(ext.get("sources") or []) or "none"
+
+    def lead(counts: dict) -> str:
+        """The leader, or the tie spelled out.
+
+        A tie broken silently is the whole failure this split exists to fix:
+        the blended US chart reads country 23 to pop 6, and on current releases
+        alone the same feed is 6-6. Printing one name there would hide the
+        finding behind a sort order.
+        """
+        if not counts:
+            return "nothing"
+        top = max(counts.values())
+        names = sorted(k for k, v in counts.items() if v == top)
+        if len(names) == 1:
+            return f"{names[0]} on {top}"
+        return (", ".join(names[:-1]) + f" and {names[-1]} tied on {top}")
+
+    blended: dict[str, int] = {}
+    for src in (current, catalogue):
+        for k, v in src.items():
+            blended[k] = blended.get(k, 0) + v
+
+    entries = ext.get("entries") or {}
+    lines = [
+        f"Genre evidence on {run_date.isoformat()}, from {sources}. Apple is a "
+        f"most-played chart and lags by construction, so the current-release "
+        f"count and the catalogue count are kept apart rather than added: "
+        f"blended it is {lead(blended)}; on current releases alone it is "
+        f"{lead(current)}. That difference is the reason for the split.",
+        f"Apple: {entries.get('apple_current', 0)} current entries, "
+        f"{entries.get('apple_catalogue', 0)} catalogue. Deezer, a different "
+        f"population answering the same question, leads with {lead(deezer)} over "
+        f"{entries.get('deezer', 0)} albums. Where the two disagree that is a "
+        f"reason to hold confidence down, not to pick a side.",
+    ]
+    unrecognised = ext.get("unrecognised") or {}
+    missing = sorted({k for v in unrecognised.values() for k in v})
+    if missing:
+        lines.append("Ids the vocabulary has never seen, which is a reason to "
+                     "edit genres.py rather than to guess: " + ", ".join(missing[:6]))
+    outside = ext.get("outside_roster") or {}
+    excluded = sorted({k for v in outside.values() for k in v})
+    if excluded:
+        lines.append("On the charts and deliberately outside the roster: "
+                     + ", ".join(excluded[:8]) + ". Counted, never forced into a "
+                     "family they do not belong to.")
+    return ('<div class="note"><span>Outside evidence</span>'
+            + "<br><br>".join(esc(x) for x in lines) + "</div>")
+
+
+def genres_page() -> str:
+    cfg = settings()
+    data = genres.scores()
+    st = genres.status(data=data)
+    learn = learning_status()
+    moves = genres.trend()
+    fams = data["families"]
+
+    with session_scope() as s:
+        recent = s.execute(select(Run.run_date, Run.notes)
+                           .order_by(Run.run_date.desc()).limit(60)).all()
+        history = _genre_history(s)
+    latest_slate = next(((d, (n or {})["genre"]) for d, n in recent
+                         if (n or {}).get("genre", {}).get("slate")), None)
+    latest_scout = next(((d, (n or {})["scout"]["external_genres"]) for d, n in recent
+                         if (n or {}).get("scout", {}).get("external_genres")), None)
+
+    # Ranked families first and in score order, then the rest by how much has
+    # been tried. The producer's own score is reported and never orders
+    # anything: it is the system grading its own homework, and letting it
+    # decide what appears at the top of this page would make it the answer to
+    # "which genre is working" by layout rather than by argument.
+    order = sorted(fams, key=lambda f: (fams[f]["taste"] is None,
+                                        -(fams[f]["taste"] or 0.0),
+                                        -fams[f]["briefed"], f))
+    family_rows = [_genre_row(f, fams[f], moves.get(f, {})) for f in order]
+
+    # Grouped under the family and in the family order above, so the two
+    # tables cannot be read as disagreeing about which family is ahead.
+    rank = {f: i for i, f in enumerate(order)}
+    spec_rows = [_genre_row(label, row, {})
+                 for label, row in sorted(
+                     data["specifics"].items(),
+                     key=lambda kv: (rank.get(kv[1]["family"], 99), kv[0]))
+                 if row["briefed"] or row["rated_n"]]
+
+    vocab_rows = [[
+        f"<b>{esc(family)}</b>",
+        f'<span class="mini">{esc(genres.id3_name(family))}</span>',
+        f'<span class="mini">{esc(", ".join(genres.VOCABULARY[family]))}</span>',
+    ] for family in genres.FAMILIES]
+
+    slate_heading, slate_body = _genre_slate_block(latest_slate, cfg)
+
+    unlabelled = data["unlabelled_briefs"]
+    predate = ("" if not unlabelled else
+               f'<div class="note"><span>Before genre was recorded</span>'
+               f'{unlabelled} brief{"" if unlabelled == 1 else "s"} carry no '
+               f'genre at all. They were written before the studio recorded one '
+               f'and they keep a null rather than a guess: reading a genre back '
+               f'out of their style strings afterwards would be inventing the '
+               f'track record this page exists to report. They are not an error '
+               f'and there is nothing to fix.</div>')
+
+    ledger_notes = latest_slate[1] if latest_slate else {}
+    off_vocab = int(ledger_notes.get("unlabelled") or 0)
+    off_note = ("" if not off_vocab else
+                f'<div class="note"><span>Vocabulary pressure</span>The Director '
+                f'returned a genre outside the vocabulary {off_vocab} time'
+                f'{"" if off_vocab == 1 else "s"} on the last run. Those specs '
+                f'were briefed and written with a null genre rather than dropped '
+                f'— a discarded spec costs a whole generation over a label. A '
+                f'count that keeps climbing is the evidence that a term is '
+                f'missing, and adding one is a change to genres.py.</div>')
+
+    proposal = (current_codex().body.get("learned", {})
+                .get("genre_vocabulary_note") or "").strip()
+    proposal_note = ("" if not proposal else
+                     f'<div class="note"><span>The retro proposes</span>'
+                     f'{esc(proposal)}<br><br>A proposal only. The vocabulary is '
+                     f'code, not codex, so adding a label is an edit to '
+                     f'genres.py and a deploy — which is what makes it land in '
+                     f'the briefer, the archivist, the duplicate check, the ID3 '
+                     f'tagger and the meta writer at the same moment.</div>')
+
+    lastfm = ("" if cfg.lastfm_api_key else
+              '<p class="sub">Last.fm is not configured, and configuring it '
+              'would not help: chart.getTopTags takes no date and no period, so '
+              'it returns a level rather than a movement. That is a decision, '
+              'not a gap.</p>')
+
+    return page("Genres", "".join([
+        "<h1>Genres</h1>",
+        '<p class="sub">Which genre is working, and what it would take to know. '
+        'Outside charts pick which families are candidates; your ratings are the '
+        'only thing that ranks them.</p>',
+        stats(("in the vocabulary", len(genres.FAMILIES)),
+              ("briefed", len(data["briefed_families"])),
+              ("ranked", len(data["ranked"])),
+              ("rated briefs", data["rated_briefs"]),
+              ("explore floor",
+               f"{cfg.genre_explore_briefs} of {cfg.total_briefs}")),
+        f'<p class="sub">{esc(_genre_headline(data, learn))}</p>',
+        f'<div class="note"><span>Allocator</span>{esc(st["note"])}<br><br>'
+        f'{esc(_genre_waiting(data, cfg))}</div>',
+        f'<div class="note"><span>Read this before the numbers</span>'
+        f'{esc(CONFOUND)}</div>',
+        predate, off_note, proposal_note,
+        "<h2>What is working</h2>",
+        table(["Family", "Briefed", "Shipped", "Rated", "Your mean",
+               "Producer mean", "Renders clean", "14d vs prior", "Last briefed"],
+              family_rows, empty="the vocabulary is empty, which cannot happen",
+              num_cols={1, 2, 3, 5, 6, 7}),
+        '<p class="sub">Briefed counts briefs, not clips: each brief returns two '
+        'clips that share a prompt and are not two independent samples. Your '
+        'mean is your rating and nothing else — the Producer\'s own score is '
+        'shown beside it, never blended into it, and never used to order this '
+        'table. Renders clean is the QC pass rate, which is the one column here '
+        'that is objective and the one available on day one.</p>',
+        f"<h2>{esc(slate_heading)}</h2>", slate_body,
+        "<h2>The last 30 days</h2>",
+        history,
+        "<h2>Specific genres</h2>",
+        table(["Genre", "Briefed", "Shipped", "Rated", "Your mean",
+               "Producer mean", "Renders clean", "14d vs prior", "Last briefed"],
+              spec_rows, num_cols={1, 2, 3, 5, 6, 7},
+              empty=f"no specific genre has been briefed yet — all "
+                    f"{len(genres.SPECIFICS)} of them are listed below"),
+        '<p class="sub">Almost all dashes for the first quarter, and that is the '
+        'design working rather than failing. Families answer "is country '
+        'working" in about a fortnight; a specific needs the same eight rated '
+        'briefs from a ninth of the supply.</p>',
+        "<h2>The vocabulary</h2>",
+        table(["Family", "ID3 tag", "Specific genres"], vocab_rows),
+        '<p class="sub">Closed, and code rather than codex: the Director, the '
+        'Archivist, the duplicate check, the ID3 tagger and the meta writer all '
+        'have to agree on it, and a deploy changes all five at once. A label '
+        'that has shipped is never renamed and never removed — renaming orphans '
+        'every row carrying it and splits one track record into two halves, '
+        'neither of which clears the bar.</p>',
+        _genre_external(latest_scout),
+        lastfm,
+    ]), "/genres")
 
 
 # ── files ────────────────────────────────────────────────────────────────────

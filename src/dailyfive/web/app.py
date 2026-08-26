@@ -481,6 +481,12 @@ def console_agents() -> str:
     return views.agents_page()
 
 
+@app.api_route("/genres", methods=["GET", "HEAD"], response_class=HTMLResponse)
+def console_genres() -> str:
+    from . import views
+    return views.genres_page()
+
+
 @app.api_route("/codex", methods=["GET", "HEAD"], response_class=HTMLResponse)
 def console_codex() -> str:
     from . import views

@@ -59,26 +59,27 @@ against. The third is an open decision — see §8.
 
 ---
 
-## 3. The roster — 11 agents
+## 3. The roster — 12 agents
 
-Six added to the five originally proposed. Each is justified by the specific failure it
+Seven added to the five originally proposed. Each is justified by the specific failure it
 prevents.
 
 | # | Agent | Status | Prevents | LLM |
 |---|---|---|---|---|
 | 01 | **Scout** | re-scoped | Making music for a mood that peaked three weeks ago | any brain |
-| 02 | **Music Director** | re-scoped | Prompts made of adjectives instead of specifications | any brain |
-| 03 | **A&R** | **added** | Five songs that are the same song | any brain |
-| 04 | **Lyricist** | kept | Generic AI lyric mush | any brain |
-| 05 | **Clearance** | **added** | `SENSITIVE_WORD_ERROR` burning credits at 2am | rules first, then any |
-| 06 | **Prompt Compiler** | re-scoped | Silent truncation, invalid param combinations | light |
-| 07 | **Conductor** | **added** | One dropped webhook killing the whole day | none |
-| 08 | **QC Engineer** | **added** | Shipping a track that clips or is 40s of silence | none |
-| 09 | **Producer** | kept | Shipping the first five instead of the best five | any |
-| 10 | **Packager** | **added** | A bucket of untitled WAVs you cannot use | light |
-| 11 | **Archivist** | **added** | Day 30 being exactly as good as day 1 | weekly retro only |
+| 02 | **Genre Director** | **added** | Learning nothing about genre because every style string is unique prose | none |
+| 03 | **Music Director** | re-scoped | Prompts made of adjectives instead of specifications | any brain |
+| 04 | **A&R** | **added** | Five songs that are the same song | any brain |
+| 05 | **Lyricist** | kept | Generic AI lyric mush | any brain |
+| 06 | **Clearance** | **added** | `SENSITIVE_WORD_ERROR` burning credits at 2am | rules first, then any |
+| 07 | **Prompt Compiler** | re-scoped | Silent truncation, invalid param combinations | light |
+| 08 | **Conductor** | **added** | One dropped webhook killing the whole day | none |
+| 09 | **QC Engineer** | **added** | Shipping a track that clips or is 40s of silence | none |
+| 10 | **Producer** | kept | Shipping the first five instead of the best five | any |
+| 11 | **Packager** | **added** | A bucket of untitled WAVs you cannot use | light |
+| 12 | **Archivist** | **added** | Day 30 being exactly as good as day 1 | weekly retro only |
 
-**Four of eleven have no model in them at all.** That is what makes the system cheap
+**Five of twelve have no model in them at all.** That is what makes the system cheap
 enough to run 365 days a year and reliable enough to run unattended. Put a language
 model where a measurement belongs and you get a system that hallucinates that the
 audio is fine.
@@ -89,6 +90,17 @@ audio is fine.
   bands, sentiment clusters, phrases people are typing. Weights each source by how
   leading it is. Out: `signals.json`, 8-12 ranked themes with evidence. Source stack in
   §7.
+- **Genre Director** — a closed vocabulary of nine families and thirty-seven specific
+  genres, and the allocator that spreads the day's seven briefs across it. No language
+  model: scoring what worked is a `GROUP BY` over rated briefs with a sample floor, and
+  allocating the day is UCB1 with a per-family cap, which is the only kind of allocation
+  the console can explain twice from the same numbers. The slate is *counts*, never an
+  assignment — which theme gets which genre is the Music Director's call, because it is
+  the only role that sees the situation and the specification at once. A permanent floor
+  of two briefs in seven goes to families the ratings have least to say about, and that
+  floor is not exploration hygiene: it is the only thing breaking the circuit in which
+  Apple feeds the Scout's genre mix, which feeds the Director, which feeds the trend
+  score, which feeds the codex, which feeds the Director again.
 - **Music Director** — owns the **Style Codex**: a versioned, checkable document of
   production specs (BPM bands, key/mode, song form, hook placement, drop timing,
   instrumentation palette, vocal register, mix reference). Also holds the **persona
@@ -260,10 +272,31 @@ be filled with plausible-looking guesses.
 }
 ```
 
-Four of those — `primary_artist`, `language`, `explicit`, `primary_genre` — are already
-recorded elsewhere in the same file, in the persona and musical blocks. A future
-backfill is therefore a join over rows you already have, not a re-listen to a year of
-audio. That is the whole reason for reserving the shape now.
+Two of those — `primary_artist` and `primary_genre` — are already recorded elsewhere in
+the same file: `persona.name` and, since the genre vocabulary landed, `musical.genre`
+and `musical.genre_family`. A backfill of those two is a join over rows you already
+have, not a re-listen to a year of audio, and that is the reason for reserving the
+shape now.
+
+This paragraph used to claim four. It was wrong about `language` and `explicit`, which
+appear nowhere in a `meta.json` except inside the null block itself, and it was wrong
+about `primary_genre` until the genre columns existed — the `musical` block was
+`{bpm, key, song_form, instrumentation, duration_s, vocal_gender}` and nothing in it
+named a genre. The correction is recorded rather than quietly patched, because this
+document is the record of decisions and one of them was made on a false premise.
+`language` and `explicit` remain a re-listen, or a person, and neither is a reason to
+fill a field in this block.
+
+**`primary_genre` stays null, and recording `musical.genre` is not an exception to
+that.** "All of them stay null" has no exception clause and the value of the rule comes
+from having none: a half-filled block leaves the next reader unable to tell whether a
+null means "unknown" or "not yet reached". There is a second, independent reason. A
+distributor does require a genre at delivery, but from its own controlled vocabulary —
+DistroKid's, TuneCore's and CD Baby's lists are all different and none of them is ours,
+or Apple's, or Deezer's. Filling `primary_genre` from our label would assert a mapping
+we have no authority to make, in the one block built not to do that. The relationship
+is one-directional: record the genre where it was decided, and let a future delivery
+step map `musical.genre_family` onto a distributor's vocabulary under human review.
 
 **One thing this changes about the audio.** The WAV was originally specced normalised to
 -14 LUFS. That is right for an archive you listen to and slightly wrong for a delivery
@@ -366,6 +399,24 @@ Audio Analysis, Recommendations, Related Artists and algorithmic playlist access
 all withdrawn for new applications in late 2024, and most tutorials still assume they
 exist. *Google Trends means the RSS feed, not `pytrends`* — the scraper library is
 unofficial, aggressively rate-limited and breaks without notice.
+
+**There is no free leading genre signal, and that is a finding rather than a gap.**
+Every feed above that carries a genre at all is lagging by construction. Apple's RSS is
+most-played, and on the US chart 31 of 50 entries were over a year old on the day this
+was checked — blended, country beat pop 23 to 6; partitioned on `releaseDate`, current
+releases were tied 6 to 6, and the blended number is the one that lies. Deezer's chart
+carries genre only on the album object, and the same day said pop 18 to country 10. Both
+are correct about different scopes, so both counts are kept and never averaged: the
+disagreement is the informative part and a reason to hold confidence down. Last.fm's
+`chart.getTopTags` accepts only `page`, `limit` and `api_key` — no date, no period — so
+it returns a *level*, not a movement, and is not worth a key. Google Trends RSS honours
+only `geo`; `category`, `hl` and `q` are silently ignored, and across ten regions it
+returned one genuinely musical term in a hundred. It is a real leading signal for
+*themes*, which is what the Scout uses it for, and it cannot be made into one for genre.
+ListenBrainz fresh-releases is keyless and real but had 9% tag coverage over 556 distinct
+tags on 314 entries — the same no-repeats pathology the style strings had. So external
+feeds pick which families are *candidates*; the ratings are the only thing that ranks
+them, and nothing external ever produces a score.
 
 **What the free stack cannot do.** None of these is a TikTok velocity signal. On the
 free tier the Scout is much better at theme and sentiment than at sound velocity, and it
@@ -567,13 +618,14 @@ by the same process that receives Suno's callbacks:
 |---|---|
 | `/` | the latest shipped set — play it and rate it here — then runs, learning signal, which brain backs which role and whether its key is present |
 | `/runs/<date>` | the phase timeline, the themes the Scout found and from which feed, every brief with its clearance verdict, every job with callbacks-vs-polls, **all 14 candidates including the nine that did not ship and exactly why**, and every brain call with timing, and a player, download links and a rating control for each delivered song |
-| `/agents` | all eleven roles, their brains, 30-day activity and failures — including the four with no brain at all |
+| `/agents` | all twelve roles, their brains, 30-day activity and failures — including the five with no brain at all |
+| `/genres` | which genre is working and what it would take to know: mean rating and sample count per family, the day's slate and why each family was picked, the last 30 days of mix, the closed vocabulary, and the chart split behind it |
 | `/codex` | the Style Codex, persona cast and registration state, what it has learned, full version history |
 | `/files` | everything delivered, by day, each with a player and a link to every file that is actually still stored |
 
 Every brain call is recorded in an `agent_calls` row — role, provider, model,
 duration, characters in and out, and the error if it failed. That table is what
-makes "eleven agents" checkable rather than a claim, and it is what makes a
+makes "twelve agents" checkable rather than a claim, and it is what makes a
 change in output quality traceable to a change in brain.
 
 ### What is not implemented

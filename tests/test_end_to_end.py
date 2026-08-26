@@ -1,6 +1,6 @@
 """One full run with every external call faked.
 
-This is the test that proves the eleven pieces actually fit together. Nothing
+This is the test that proves the twelve pieces actually fit together. Nothing
 here reaches the network, spends a credit, or needs ffmpeg — but every phase
 transition, every database write and every hand-off between agents is real.
 """

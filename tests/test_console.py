@@ -18,7 +18,7 @@ from dailyfive.models import (AgentCall, Brief, Clip, Decision, Job, JobState,
 from dailyfive.storage import open_store
 from dailyfive.web.app import app
 
-PAGES = ["/", "/runs", "/agents", "/codex", "/files"]
+PAGES = ["/", "/runs", "/agents", "/genres", "/codex", "/files"]
 
 
 @pytest.fixture
@@ -417,3 +417,162 @@ def test_a_run_with_artwork_configured_says_nothing_about_it(client, populated):
         run = s.get(Run, populated)
         run.notes = {**(run.notes or {}), "art": {"configured": True}}
     assert "No cover art" not in client.get("/runs/2026-08-27").text
+
+
+# ── the genre page ───────────────────────────────────────────────────────────
+def _genre_days(family, specific, ratings, *, start=400):
+    """One rated brief per day, as the pipeline produces them."""
+    from datetime import timedelta
+
+    from dailyfive.models import Outcome, utcnow
+    for i, score in enumerate(ratings):
+        with session_scope() as s:
+            r = Run(run_date=date(2026, 1, 1) + timedelta(days=start + i),
+                    phase=RunPhase.SHIPPED)
+            s.add(r); s.flush(); rid = r.id
+        with session_scope() as s:
+            b = Brief(run_id=rid, slot_type=SlotType.FULL, idx=0, title=f"t{i}",
+                      theme="a specific situation", genre_family=family,
+                      genre=specific, style_string="close-mic vocal")
+            s.add(b); s.flush()
+            j = Job(run_id=rid, brief_id=b.id, idempotency_key=f"c{rid}",
+                    state=JobState.MIRRORED, payload={})
+            s.add(j); s.flush()
+            first = None
+            for v in (0, 1):
+                c = Clip(run_id=rid, job_id=j.id, brief_id=b.id,
+                         audio_id=f"c{rid}-{v}", variant=v, slot_type=SlotType.FULL,
+                         genre_family=family, genre=specific, shipped=v == 0,
+                         qc_verdict="pass", score_total=6.0)
+                s.add(c); s.flush()
+                first = first or c.id
+            if score is not None:
+                s.add(Outcome(clip_id=first, rating=score, rated_at=utcnow()))
+
+
+def test_the_genre_page_is_the_vocabulary_before_it_is_a_scoreboard(client):
+    """Day one has to be a real page, not an empty one. It shows what the
+    studio knows how to make and says plainly that it has made none of it."""
+    from dailyfive.genres import FAMILIES, SPECIFICS
+    body = client.get("/genres").text
+    for family in FAMILIES:
+        assert family in body, family
+    for specific in ("country-soul", "bedroom-pop", "uk-garage", "bachata"):
+        assert specific in body, specific
+    assert f"{len(FAMILIES)} families" in body
+    assert f"{len(SPECIFICS)} specific genres" in body
+    assert "has recorded none of them" in body
+
+
+def test_the_genre_page_prints_no_mean_before_the_bar_is_cleared(client):
+    """Cold, and cold has to look like cold. Seven rated briefs is a count and
+    a dash, never an average."""
+    import re
+
+    from dailyfive.genres import GENRE_MIN_RATED
+    _genre_days("country", "country-soul", [9] * (GENRE_MIN_RATED - 1))
+    body = client.get("/genres").text
+    cells = re.findall(r"<td>(.*?)</td>", body, flags=re.S)
+    means = [c for c in cells if "rated brief" in c]
+    assert means, "the mean column disappeared"
+    for cell in means:
+        assert "<b>" not in cell, f"a mean was printed: {cell}"
+        assert f"of {GENRE_MIN_RATED} rated briefs" in cell
+    assert "nothing here is ranked" in body
+
+
+def test_the_genre_page_states_the_confound_in_plain_words(client):
+    body = client.get("/genres").text
+    for phrase in ("entangled with persona", "not a controlled experiment",
+                   "one rater", "Nothing is blinded", "Marisol"):
+        assert phrase in body, phrase
+
+
+def test_the_genre_page_says_which_briefs_predate_the_column(client, run_id,
+                                                             brief_factory):
+    """The six briefs already in production keep a null. The page has to say
+    so without implying an error, because there is nothing to fix."""
+    brief_factory(idx=0)
+    brief_factory(idx=1)
+    body = client.get("/genres").text
+    assert "2 briefs carry no genre at all" in body
+    assert "before the studio recorded one" in body
+    assert "there is nothing to fix" in body
+
+
+def test_the_genre_page_ranks_on_your_rating_and_not_the_producers(client):
+    from dailyfive.genres import GENRE_MIN_RATED
+    _genre_days("folk", "indie-folk", [9] * GENRE_MIN_RATED, start=400)
+    _genre_days("pop", "alt-pop", [4] * GENRE_MIN_RATED, start=440)
+    body = client.get("/genres").text
+    assert "folk is ahead" in body
+    assert body.index("<b>folk</b>") < body.index("<b>pop</b>")
+    assert "never used to order this table" in body
+
+
+def test_the_genre_page_shows_a_slate_on_a_day_no_run_has_happened(client):
+    """The allocator is deterministic, so the slate a fresh install would be
+    given is a real thing to show — and an all-explore one says so."""
+    from dailyfive.config import settings
+    body = client.get("/genres").text
+    assert "The next slate" in body
+    assert f"Every one of these {settings().total_briefs} briefs is exploration" in body
+
+
+def test_the_genre_page_keeps_the_two_chart_scopes_apart(client, run_id):
+    with session_scope() as s:
+        s.get(Run, run_id).notes = {"scout": {"external_genres": {
+            "current": {"country": 6, "pop": 6},
+            "catalogue": {"country": 17, "hip-hop": 14},
+            "deezer": {"pop": 18, "country": 10},
+            "entries": {"apple_current": 19, "apple_catalogue": 31, "deezer": 25},
+            "sources": ["apple", "deezer"]}}}
+    body = client.get("/genres").text
+    assert "country and pop tied on 6" in body, "a 6-6 tie was broken silently"
+    assert "country on 23" in body
+    assert "hold confidence down" in body
+
+
+def test_the_roster_count_is_computed(client):
+    from dailyfive.web.views import ROSTER
+    body = client.get("/agents").text
+    assert f"{len(ROSTER)} roles" in body
+    assert "Eleven roles" not in body, "a hardcoded count beside a computed one"
+    assert "Genre Director" in body
+
+
+def test_the_overview_points_at_the_genre_record(client):
+    body = client.get("/").text
+    assert 'href="/genres"' in body
+    assert "Nothing briefed yet" in body
+
+
+def test_the_codex_page_never_shows_a_negation_as_something_that_scored_well(client):
+    """The live codex reached v3 with a learned table that was entirely
+    "no synths" 6.11 and "no pads" 6.11, and a version is never rewritten in
+    place, so those rows are in the record forever. The page they are rendered
+    on must not repeat what the prompt was about to do with them."""
+    import json
+
+    from dailyfive.codex import SEED_CODEX, save_new_version
+    body = json.loads(json.dumps(SEED_CODEX))
+    body["learned"]["style_scores"] = {"no synths": 6.11, "no pads": 6.11,
+                                       "brushed kit": 7.4}
+    save_new_version(body, [], diff="test", rationale="test")
+
+    page = client.get("/codex").text
+    assert "brushed kit" in page
+    assert "no synths" not in page and "no pads" not in page
+    assert "2 stored descriptors not shown" in page
+
+
+def test_the_codex_page_shows_a_genre_score_with_its_sample_count(client):
+    import json
+
+    from dailyfive.codex import SEED_CODEX, save_new_version
+    body = json.loads(json.dumps(SEED_CODEX))
+    body["learned"]["genre_scores"] = {"country": {"mean": 7.4, "n": 12}}
+    save_new_version(body, [], diff="test", rationale="test")
+
+    page = client.get("/codex").text
+    assert "7.40" in page and "over 12 rated briefs" in page

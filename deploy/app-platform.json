@@ -50,7 +50,7 @@
         },
         {
           "key": "RETENTION_DAYS",
-          "value": "15",
+          "value": "30",
           "scope": "RUN_AND_BUILD_TIME"
         },
         {
@@ -175,7 +175,7 @@
         },
         {
           "key": "RETENTION_DAYS",
-          "value": "15",
+          "value": "30",
           "scope": "RUN_AND_BUILD_TIME"
         },
         {

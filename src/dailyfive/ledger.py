@@ -2,7 +2,7 @@
 
 Two reasons this exists rather than a log line.
 
-Visibility: "eleven agents" is a claim until you can see which ones ran today,
+Visibility: "twelve agents" is a claim until you can see which ones ran today,
 on which brain, how long they took and which ones failed. The console reads
 this table.
 

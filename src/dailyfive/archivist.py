@@ -257,7 +257,7 @@ RETRO_SCHEMA = """{
   "tempo_band_edits": {"band_name": [low, high]},
   "avoid_additions": ["descriptor to stop using"],
   "palette_additions": ["new instrumentation palette, <= 120 chars"],
-  "genre_vocabulary_note": "a genre label the evidence says is missing, and why, <= 200 chars — \"\" nearly always",
+  "genre_vocabulary_note": "a missing genre label and why, <= 200 chars; usually empty",
   "confidence": "low|medium|high",
   "evidence_note": "what the data does and does not support, <= 300 chars"
 }"""

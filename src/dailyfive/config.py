@@ -103,7 +103,7 @@ class Settings:
     # Where delivered bytes live: "database" | "spaces" | "local".
     # The retention window applies whichever is chosen.
     audio_store: str = field(default_factory=lambda: _s("AUDIO_STORE", "database").lower())
-    retention_days: int = field(default_factory=lambda: _i("RETENTION_DAYS", 15))
+    retention_days: int = field(default_factory=lambda: _i("RETENTION_DAYS", 30))
 
     # Signals
     youtube_api_key: str = field(default_factory=lambda: _s("YOUTUBE_API_KEY"))

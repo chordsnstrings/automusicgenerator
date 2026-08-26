@@ -306,7 +306,7 @@ class AgentCall(Base):
 
     This is what makes the roster visible rather than notional: which role ran,
     which brain answered, how long it took, how much it moved, and what broke.
-    Without it "eleven agents" is a claim in a document.
+    Without it "twelve agents" is a claim in a document.
     """
     __tablename__ = "agent_calls"
 

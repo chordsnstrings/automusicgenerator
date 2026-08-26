@@ -699,3 +699,51 @@ def test_existing_rows_survive_the_migration_as_null(run_id, brief_factory):
     data = genres.scores()
     assert data["unlabelled_briefs"] == 1
     assert all(row["briefed"] == 0 for row in data["families"].values())
+
+
+# ── the console's one windowed number ────────────────────────────────────────
+def test_a_delta_needs_both_windows_to_clear_the_bar():
+    """Half a comparison is not a comparison. Eight rated briefs in the recent
+    window and three in the prior one is a number about the recent window only,
+    and printing it as a change would be inventing the other half."""
+    _stock("country", n=GENRE_MIN_RATED, rating=9, start=900)
+    moves = genres.trend()
+    assert moves["country"]["recent_n"] == GENRE_MIN_RATED
+    assert moves["country"]["prior_n"] == 0
+    assert moves["country"]["delta"] is None
+    assert moves["country"]["recent"] == pytest.approx(9.0, abs=0.05)
+
+
+def test_a_delta_is_printed_once_both_windows_are_full():
+    n = GENRE_MIN_RATED
+    for i in range(n):
+        rid = _run(date(2026, 1, 1) + timedelta(days=700 + i))
+        bid = _brief(rid, 0, "folk", "indie-folk")
+        _rate(_clips(rid, bid, shipped=1)[0], 8, days_ago=2)
+    for i in range(n):
+        rid = _run(date(2026, 1, 1) + timedelta(days=800 + i))
+        bid = _brief(rid, 0, "folk", "indie-folk")
+        _rate(_clips(rid, bid, shipped=1)[0], 5, days_ago=20)
+    moves = genres.trend()["folk"]
+    assert moves["recent_n"] == n and moves["prior_n"] == n
+    assert moves["delta"] == pytest.approx(3.0, abs=0.05)
+
+
+def test_the_delta_counts_distinct_briefs_not_clips():
+    """The same rule as everywhere else: two clips of a pair are one decision,
+    and letting them count twice would let one day fill a window on its own."""
+    rid = _run(date(2026, 1, 1) + timedelta(days=990))
+    bid = _brief(rid, 0, "rock", "indie-rock")
+    for cid in _clips(rid, bid, shipped=2):
+        _rate(cid, 7, days_ago=1)
+    assert genres.trend()["rock"]["recent_n"] == 1
+
+
+def test_the_window_never_reaches_the_allocator():
+    """trend() is display only. scores() has no window on purpose — a decay
+    instead of a cutoff — and the delta is allowed to exist only because
+    nothing that allocates a brief reads it."""
+    import inspect
+
+    source = inspect.getsource(genres.slate) + inspect.getsource(genres.scores)
+    assert "trend(" not in source

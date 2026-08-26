@@ -1,11 +1,13 @@
 """The loop only means something if it reports which signal it is running on."""
 
+import json
 from datetime import date
 
 from dailyfive.archivist import (MIN_OBSERVATIONS, _bpm_bucket, _clip_value,
                                  _first_reason, _style_tokens, aggregate,
                                  apply_learning, learning_status, rate,
                                  unrate)
+from dailyfive.codex import current as current_codex
 from dailyfive.db import session_scope
 from dailyfive.models import Clip, Outcome, SlotType
 
@@ -168,3 +170,93 @@ def test_clearing_a_rating_moves_the_learning_signal_back(run_id, brief_factory)
     with session_scope() as s:
         clip = s.get(Clip, cid)
         assert _clip_value(clip, s.query(Outcome).one()) > 5.0
+
+
+# ── genre reaches the codex, or is refused entry ─────────────────────────────
+def _rated_family(family, specific, ratings, *, start=500):
+    """One rated brief per day in one family, the way the pipeline produces them.
+
+    A day at a time on purpose: two briefs of the same family on one date are
+    two rows but one day's noise, and the whole point of the threshold is that
+    such a day cannot promote anything on its own.
+    """
+    from datetime import timedelta
+
+    from dailyfive.models import (Brief, Job, JobState, Outcome, Run, RunPhase,
+                                  SlotType, utcnow)
+    for i, score in enumerate(ratings):
+        with session_scope() as s:
+            r = Run(run_date=date(2026, 1, 1) + timedelta(days=start + i),
+                    phase=RunPhase.SHIPPED)
+            s.add(r); s.flush(); rid = r.id
+        with session_scope() as s:
+            b = Brief(run_id=rid, slot_type=SlotType.FULL, idx=0, title=f"t{i}",
+                      theme="a specific situation", genre_family=family,
+                      genre=specific, style_string="close-mic vocal")
+            s.add(b); s.flush()
+            j = Job(run_id=rid, brief_id=b.id, idempotency_key=f"g{rid}",
+                    state=JobState.SUCCESS, payload={})
+            s.add(j); s.flush()
+            first = None
+            for v in (0, 1):
+                c = Clip(run_id=rid, job_id=j.id, brief_id=b.id,
+                         audio_id=f"g{rid}-{v}", variant=v, slot_type=SlotType.FULL,
+                         genre_family=family, genre=specific, shipped=v == 0,
+                         style_string=b.style_string, qc_verdict="pass",
+                         score_total=6.0)
+                s.add(c); s.flush()
+                first = first or c.id
+            s.add(Outcome(clip_id=first, rating=score, rated_at=utcnow()))
+
+
+def test_apply_learning_refuses_to_write_a_thin_genre_score():
+    """Seven rated briefs is not eight, and the codex says nothing rather than
+    handing the Director a number it is told beats its priors."""
+    from dailyfive.genres import GENRE_MIN_RATED
+    _rated_family("country", "country-soul", [9] * (GENRE_MIN_RATED - 1))
+    apply_learning()
+    learned = current_codex().body["learned"]
+    assert learned["genre_scores"] == {}
+    assert learned["subgenre_scores"] == {}
+
+
+def test_the_last_rated_brief_before_the_bar_is_what_puts_a_genre_in_the_codex():
+    from dailyfive.genres import GENRE_MIN_RATED
+    _rated_family("country", "country-soul", [9] * GENRE_MIN_RATED)
+    apply_learning()
+    learned = current_codex().body["learned"]
+    assert learned["genre_scores"]["country"]["n"] == GENRE_MIN_RATED
+    assert learned["genre_scores"]["country"]["mean"] > 8.5
+    assert learned["subgenre_scores"]["country-soul"]["n"] == GENRE_MIN_RATED
+
+
+def test_a_genre_score_never_reaches_the_director_without_its_sample_count():
+    """director.py tells the model a learned observation beats its priors. A
+    mean arriving without its n is a mean the model cannot discount, which is
+    exactly how "no synths 6.11" came to look like a finding."""
+    from dailyfive.genres import GENRE_MIN_RATED
+    _rated_family("folk", "indie-folk", [7] * GENRE_MIN_RATED)
+    apply_learning()
+    context = current_codex().brief_context()
+    assert "folk" in context
+    assert f"over {GENRE_MIN_RATED} rated briefs" in context
+    for line in context.splitlines():
+        if line.startswith("genre observed"):
+            assert "rated brief" in line
+            break
+    else:
+        raise AssertionError("no genre line in the Director's context")
+
+
+def test_the_retros_vocabulary_proposal_never_reaches_the_directors_prompt():
+    """It is a proposal for a person to make as a code change. Rendered into
+    the prompt as a note it would be an instruction to write a word the
+    vocabulary does not carry — normalise() would null it, and the brief would
+    lose the genre the note was arguing for."""
+    from dailyfive.codex import SEED_CODEX, save_new_version
+    body = json.loads(json.dumps(SEED_CODEX))
+    body["learned"]["genre_vocabulary_note"] = "add afrobeats; three off-vocabulary specs"
+    save_new_version(body, [], diff="test", rationale="test")
+    context = current_codex().brief_context()
+    assert "afrobeats" not in context
+    assert current_codex().body["learned"]["genre_vocabulary_note"]
