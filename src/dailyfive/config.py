@@ -127,6 +127,19 @@ class Settings:
     # resize. Read the figure off the cluster; do not guess it.
     db_disk_gb: float = field(default_factory=lambda: _f("DB_DISK_GB", 0.0))
 
+    # Whether an upload declares itself as containing synthetic media. OFF by
+    # the owner's explicit decision, recorded here rather than left as an
+    # omission so a future reader finds a choice instead of an oversight.
+    #
+    # What that trades: YouTube places the disclosure obligation on the
+    # uploader for realistic depictions of people, and treats an undisclosed
+    # violation more harshly than a disclosed one; the EU AI Act's Article 50
+    # transparency duty is law rather than policy where the audience is in the
+    # EU. Against that, the label costs some reach. The owner weighed both and
+    # chose reach. Flipping this to true is the only change needed.
+    declare_synthetic: bool = field(
+        default_factory=lambda: _b("DECLARE_SYNTHETIC", False))
+
     # Signals
     youtube_api_key: str = field(default_factory=lambda: _s("YOUTUBE_API_KEY"))
     lastfm_api_key: str = field(default_factory=lambda: _s("LASTFM_API_KEY"))
