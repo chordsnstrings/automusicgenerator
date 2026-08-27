@@ -30,7 +30,7 @@ from .codex import current as current_codex
 from .codex import is_negation, save_new_version
 from .db import session_scope
 from .errors import ProviderError
-from .models import Clip, Outcome, Run, SlotType
+from .models import Clip, Outcome, Publication, Run, SlotType
 from .agents.base import ask_json
 
 log = logging.getLogger(__name__)
@@ -109,9 +109,20 @@ def learning_status() -> dict:
             select(func.count(Outcome.id)).where(Outcome.rating.isnot(None))).scalar() or 0
         runs = s.execute(select(func.count(Run.id))).scalar() or 0
 
+    measured = len(audience_scale())
+
     coverage = (rated / shipped) if shipped else 0.0
-    if rated == 0:
-        signal = ("producer-only — no ratings recorded yet, so the loop is "
+    # Stated in the order the value function actually applies them, so this
+    # sentence stays true as the studio moves down the list. Views first,
+    # because they are what the studio is for; the rating next, because it is a
+    # forecast of the same thing and a good one; the Producer's own score last,
+    # which is the case where the loop is grading its own homework.
+    if measured >= 3:
+        signal = (f"audience-led — {measured} published songs carry view counts, "
+                  f"ranked against each other at {int(VIEWS_WEIGHT * 100)}% of "
+                  f"the weight where a rating exists too")
+    elif rated == 0:
+        signal = ("producer-only — no ratings and no view counts, so the loop is "
                   "optimising for the Producer agent's opinion")
     elif coverage < 0.5:
         signal = (f"mixed — {rated} of {shipped} shipped songs rated "
@@ -120,18 +131,85 @@ def learning_status() -> dict:
         signal = f"rating-led — {coverage:.0%} of shipped songs carry your rating"
 
     return {"runs": runs, "clips": total, "shipped": shipped,
-            "rated": rated, "coverage": round(coverage, 3), "signal": signal}
+            "rated": rated, "measured": measured,
+            "coverage": round(coverage, 3), "signal": signal}
 
 
-def _clip_value(clip: Clip, outcome: Outcome | None) -> float:
+# How much of a clip's value comes from what an audience did, when that is
+# known at all. The rest is your rating. Views lead because the studio's whole
+# premise is that a song succeeds by being watched and reused, and a rating is a
+# forecast of that; but the forecast is not noise — you hear things a view count
+# cannot express, and a song that travelled for reasons unrelated to the music
+# is a real thing that happens.
+VIEWS_WEIGHT = 0.7
+
+
+def audience_scale(days: int = 60) -> dict[int, float]:
+    """Each published clip's view count as a 0-10 score, ranked against its peers.
+
+    Ranked rather than scaled against a constant, and that is the whole design.
+    A view count has no natural ceiling and no meaning on its own: 400 views is
+    a hit on a channel with sixty subscribers and a failure on one with a
+    million, and any fixed divisor would encode today's channel size into a
+    codex that is meant to outlast it. A percentile answers the only question
+    the learning loop actually asks — did this one do better than the others —
+    and it keeps answering it as the channel grows.
+
+    Views are summed across platforms rather than compared. A song on TikTok and
+    on YouTube is one song reaching two audiences, and the sum is how much reach
+    it got; treating them as two observations would count every published song
+    twice and quietly double the weight of whatever is published to both.
+
+    Fewer than three published clips returns nothing. A percentile over two
+    points is a coin toss dressed as a measurement, and it would arrive with the
+    full authority of a number.
+    """
+    cutoff = date.today() - timedelta(days=days)
+    with session_scope() as s:
+        rows = s.execute(
+            select(Publication.clip_id, func.sum(Publication.views))
+            .join(Clip, Clip.id == Publication.clip_id)
+            .join(Run, Clip.run_id == Run.id)
+            .where(Run.run_date >= cutoff, Publication.views.isnot(None))
+            .group_by(Publication.clip_id)).all()
+
+    totals = [(cid, int(v or 0)) for cid, v in rows]
+    if len(totals) < 3:
+        return {}
+
+    ordered = sorted(totals, key=lambda kv: kv[1])
+    n = len(ordered)
+    out: dict[int, float] = {}
+    for i, (clip_id, _views) in enumerate(ordered):
+        out[clip_id] = round(10.0 * i / (n - 1), 3)
+
+    # Ties must not be broken by row order — two songs on the same view count
+    # are the same observation, and giving one of them a better score than the
+    # other would be the enumeration index leaking into the codex.
+    by_views: dict[int, list[float]] = defaultdict(list)
+    for clip_id, views in ordered:
+        by_views[views].append(out[clip_id])
+    means = {v: sum(scores) / len(scores) for v, scores in by_views.items()}
+    for clip_id, views in ordered:
+        out[clip_id] = round(means[views], 3)
+    return out
+
+
+def _clip_value(clip: Clip, outcome: Outcome | None,
+                audience: float | None = None) -> float:
     """One number per clip on a 0-10 scale.
 
-    Your rating wins outright where it exists. Where it does not, the Producer's
-    score stands in, damped toward the midpoint so an unrated clip never
-    outweighs a rated one.
+    What an audience did leads where it is known, blended with your rating where
+    that exists too. Where neither does, the Producer's score stands in, damped
+    toward the midpoint so an unrated clip never outweighs a rated one.
     """
-    if outcome and outcome.rating is not None:
-        return float(outcome.rating)
+    rating = float(outcome.rating) if outcome and outcome.rating is not None else None
+    if audience is not None and rating is not None:
+        return audience * VIEWS_WEIGHT + rating * (1.0 - VIEWS_WEIGHT)
+    if audience is not None:
+        return audience
+    if rating is not None:
+        return rating
     if clip.score_total is not None:
         return 5.0 + (float(clip.score_total) - 5.0) * 0.6
     return 3.0 if clip.qc_verdict == "fail" else 5.0
@@ -140,6 +218,7 @@ def _clip_value(clip: Clip, outcome: Outcome | None) -> float:
 def aggregate(days: int = 60) -> dict:
     """Recompute what the Director reads. Pure arithmetic over rows."""
     cutoff = date.today() - timedelta(days=days)
+    audience = audience_scale(days)
     with session_scope() as s:
         rows = s.execute(
             select(Clip, Outcome)
@@ -155,7 +234,7 @@ def aggregate(days: int = 60) -> dict:
 
         for clip, outcome in rows:
             n += 1
-            value = _clip_value(clip, outcome)
+            value = _clip_value(clip, outcome, audience.get(clip.id))
             for token in _style_tokens(clip.style_string):
                 style_vals[token].append(value)
             if clip.bpm_target:
@@ -177,6 +256,7 @@ def aggregate(days: int = 60) -> dict:
 
     return {
         "observations": n,
+        "published_with_views": len(audience),
         "style_scores": _means(style_vals),
         "bpm_scores": _means(bpm_vals),
         "persona_scores": _means(persona_vals),

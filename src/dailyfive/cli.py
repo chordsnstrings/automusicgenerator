@@ -474,6 +474,66 @@ def _materialise(spaces_key: str | None, work) -> tuple:
     return out[0], out[1]
 
 
+def cmd_publish(args) -> int:
+    """Upload a song's video to a platform, or read back what the uploads did."""
+    init_db()
+    from pathlib import Path
+
+    from . import publish
+
+    if args.action == "metrics":
+        result = publish.refresh(days=args.days, platform=args.platform)
+        print(json.dumps(result, indent=2, default=str))
+        return 0 if not result["failed"] else 1
+
+    if args.action == "status":
+        if not args.clip_id:
+            print("which song? pass a clip id")
+            return 1
+        rows = publish.for_clip(args.clip_id)
+        if not rows:
+            print(f"clip {args.clip_id} has not been published anywhere")
+            return 0
+        print(json.dumps(rows, indent=2, default=str))
+        return 0
+
+    # action == "up"
+    if not args.clip_id:
+        print("which song? pass a clip id")
+        return 1
+    if not args.file:
+        print("which file? pass --file (the short or the lyric video)")
+        return 1
+
+    with session_scope() as s:
+        clip = s.get(Clip, args.clip_id)
+        if clip is None:
+            print(f"no clip {args.clip_id}")
+            return 1
+        brief = s.get(Brief, clip.brief_id)
+        title = clip.title or (brief.title if brief else "Untitled")
+        theme = (brief.theme if brief else "") or ""
+        persona = brief.persona_name if brief else None
+        genre_family = clip.genre_family
+
+    targets = args.platform.split(",") if args.platform else list(publish.PLATFORMS)
+    tags = [t for t in [genre_family, "newmusic", "originalsong"] if t]
+    description = "\n\n".join(x for x in (theme, persona and f"— {persona}") if x)
+
+    failed = False
+    for platform in targets:
+        try:
+            row = publish.publish(clip_id=args.clip_id, platform=platform,
+                                  file=Path(args.file), title=title,
+                                  description=description, tags=tags,
+                                  privacy=args.privacy)
+            print(f"{platform}: {row.url}")
+        except (ProviderError, DailyFiveError) as exc:
+            failed = True
+            print(f"{platform}: {exc}", file=sys.stderr)
+    return 1 if failed else 0
+
+
 def cmd_retro(args) -> int:
     init_db()
     result = archivist.weekly_retro(days=args.days, dry_run=args.dry_run)
@@ -737,6 +797,17 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-upload", action="store_true",
                    help="build it but do not store it beside the song")
     s.set_defaults(fn=cmd_short)
+
+    s = sub.add_parser("publish", help="upload a video, or read back what it did")
+    s.add_argument("action", nargs="?", default="up",
+                   choices=["up", "metrics", "status"])
+    s.add_argument("clip_id", nargs="?", type=int)
+    s.add_argument("--file", help="the video to upload")
+    s.add_argument("--platform", help="youtube, tiktok, or both (default)")
+    s.add_argument("--privacy", default="public", choices=["public", "private"])
+    s.add_argument("--days", type=int, default=90,
+                   help="metrics: how far back to re-read")
+    s.set_defaults(fn=cmd_publish)
 
     s = sub.add_parser("retro", help="weekly codex retrospective")
     s.add_argument("--days", type=int, default=14)

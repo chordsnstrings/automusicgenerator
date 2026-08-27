@@ -132,3 +132,75 @@ def test_the_lyric_video_still_burns_its_words():
 
     from dailyfive import video
     assert "subtitles" in inspect.getsource(video.lyric_video)
+
+
+# ── the file is not done until it decodes ────────────────────────────────────
+def _tiny_mp4(path):
+    """A real, short, valid MP4 — cheap enough to build inside a test."""
+    import subprocess
+    subprocess.run(["ffmpeg", "-nostdin", "-y", "-v", "error",
+                    "-f", "lavfi", "-i", "color=c=black:s=160x120:r=25:d=2",
+                    "-f", "lavfi", "-i", "sine=frequency=200:duration=2",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                    "-movflags", "+faststart", str(path)], check=True)
+    return path
+
+
+def test_a_truncated_file_is_caught_even_though_it_probes_clean(tmp_path):
+    """This is the whole reason `verify` decodes rather than probes.
+
+    `+faststart` puts the moov atom at the FRONT, so a file truncated to a
+    quarter of its length still reports its full runtime and a plausible size.
+    A lyric video that reported 561 seconds and 14.7 MB and would not open is
+    what this test is made of.
+    """
+    import subprocess
+
+    from dailyfive import video
+
+    good = _tiny_mp4(tmp_path / "good.mp4")
+    assert video.verify(good) > 1.0
+
+    bad = tmp_path / "bad.mp4"
+    bad.write_bytes(good.read_bytes()[:len(good.read_bytes()) // 3])
+
+    # The probe alone is fooled — that is the point being asserted.
+    probed = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=nw=1:nk=1", str(bad)], capture_output=True, text=True)
+    assert probed.stdout.strip(), "ffprobe still reports a duration for the wreck"
+
+    with pytest.raises(RuntimeError, match="does not decode"):
+        video.verify(bad)
+
+
+def test_a_file_of_the_wrong_length_is_caught(tmp_path):
+    from dailyfive import video
+    good = _tiny_mp4(tmp_path / "good.mp4")
+    with pytest.raises(RuntimeError, match="expected"):
+        video.verify(good, expect_s=60.0)
+
+
+def test_both_deliverables_are_verified_before_they_are_returned():
+    """A platform rejects a damaged upload silently, so neither format may be
+    handed back on ffmpeg's exit code alone."""
+    import inspect
+
+    from dailyfive import video
+    assert "verify(" in inspect.getsource(video.lyric_video)
+    assert "verify(" in inspect.getsource(video.hook_short)
+
+
+def test_the_bed_zoom_covers_the_whole_song_not_the_first_minute():
+    """A fixed 0.00008 per frame hits the ceiling after sixty seconds, so a
+    three-minute song crept for a minute and then sat still for two."""
+    from dailyfive import video
+
+    for dur in (40.0, 190.0, 320.0):
+        step = video.zoom_step(dur)
+        travelled = 1.0 + step * int(dur * 25)
+        assert abs(travelled - video.ZOOM_MAX) < 0.005, f"{dur}s stalls or overruns"
+
+    # And the longer the song, the slower the move — the property the constant
+    # could not have.
+    assert video.zoom_step(320.0) < video.zoom_step(40.0)

@@ -63,6 +63,13 @@ def _dump_sqlite(url: str, dest: Path) -> Path:
             out = sqlite3.connect(staged)
             with out:
                 src.backup(out)
+                # Same rule as the Postgres dump: the schema travels, the live
+                # refresh tokens do not. Deleted from the SNAPSHOT, never from
+                # the running database — this connection is the copy.
+                try:
+                    out.execute("DELETE FROM oauth_tokens")
+                except sqlite3.OperationalError:
+                    pass          # a database old enough not to have the table
             out.close()
         finally:
             src.close()
@@ -80,7 +87,14 @@ def _dump_postgres(url: str, dest: Path) -> Path:
         libpq = url.replace("postgresql+psycopg://", "postgresql://") \
                    .replace("postgresql+psycopg2://", "postgresql://")
         with staged.open("wb") as fh:
-            proc = subprocess.run(["pg_dump", "--no-owner", "--no-privileges", libpq],
+            # The schema of oauth_tokens is dumped; its rows are not. That
+            # table holds live refresh tokens for the accounts this catalogue
+            # is published to, and a nightly backup that also happens to be a
+            # working set of credentials is a much more interesting thing to
+            # steal than a nightly backup. Restoring one means re-consenting
+            # once in a browser, which is the correct amount of friction.
+            proc = subprocess.run(["pg_dump", "--no-owner", "--no-privileges",
+                                   "--exclude-table-data=oauth_tokens", libpq],
                                   stdout=fh, stderr=subprocess.PIPE, timeout=1800)
         if proc.returncode != 0:
             raise DailyFiveError(f"pg_dump failed: {proc.stderr.decode()[:400]}")

@@ -43,6 +43,10 @@ MIN_GAP_S = 0.35
 
 FONT = "DejaVu Sans"          # verified present in the container; see Dockerfile
 
+# How far the bed zooms in over the whole song. Small on purpose: the move
+# exists so a still does not read as a frozen stream, not so anyone notices it.
+ZOOM_MAX = 1.12
+
 _STAMP = re.compile(r"\[(\d{1,2}):(\d{2}(?:\.\d+)?)\]")
 _SECTION = re.compile(r"\[([A-Za-z][A-Za-z ]{1,20}\d?)\]")
 _METADATA = re.compile(r"^\[(ti|ar|al|by|offset|re|ve):", re.I)
@@ -182,6 +186,56 @@ def _ffmpeg(args: list[str], what: str) -> None:
         raise RuntimeError(f"{what} failed: {r.stderr.strip()[-600:]}")
 
 
+def zoom_step(duration_s: float, *, fps: int = 25) -> float:
+    """How much the bed zooms per frame, so the move lasts the whole song.
+
+    This was a constant 0.00008, which reaches the ZOOM_MAX ceiling after 1500
+    frames — sixty seconds. On every real song the picture therefore crept for
+    the first minute and then sat perfectly still for the remaining two, which
+    is the exact thing the move exists to prevent: a still image on YouTube
+    reads as a frozen stream after about ten seconds.
+    """
+    return (ZOOM_MAX - 1.0) / max(1, int(duration_s * fps))
+
+
+def verify(path: Path, *, expect_s: float | None = None,
+           tolerance_s: float = 1.5) -> float:
+    """Decode the finished file and refuse to call a damaged one done.
+
+    ffmpeg exiting zero does not mean the file plays. This one shipped a
+    lyric video that reported success at 561 seconds and 14.7 MB and would
+    not open — and none of the obvious checks catch it. ffprobe reads the
+    duration out of the moov atom, which `+faststart` puts at the FRONT, so a
+    file truncated to a quarter of its length still reports its full runtime
+    and a plausible size. `ffmpeg -f null -` prints the decode errors and then
+    exits zero anyway.
+
+    So: a real decode of every packet, with ``-xerror`` to make the first error
+    terminal, and the exit code checked rather than the output parsed. About a
+    second per thirty seconds of 1080p, which is nothing next to shipping a
+    file nobody can play.
+    """
+    r = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-xerror",
+                        "-i", str(path), "-f", "null", "-"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"{path.name} does not decode: "
+                           f"{r.stderr.strip()[-400:] or 'exit ' + str(r.returncode)}")
+
+    probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries",
+                            "format=duration", "-of",
+                            "default=nw=1:nk=1", str(path)],
+                           capture_output=True, text=True)
+    try:
+        got = float(probe.stdout.strip())
+    except ValueError as exc:
+        raise RuntimeError(f"{path.name} has no readable duration") from exc
+
+    if expect_s is not None and abs(got - expect_s) > tolerance_s:
+        raise RuntimeError(f"{path.name} is {got:.1f}s, expected {expect_s:.1f}s")
+    return got
+
+
 def lyric_video(audio: Path, lrc: Path, dest: Path, *,
                 cover: Path | None = None, duration_s: float | None = None,
                 width: int = 1920, height: int = 1080) -> Path:
@@ -206,10 +260,19 @@ def lyric_video(audio: Path, lrc: Path, dest: Path, *,
     if art:
         # zoompan runs on a frame sequence, so the still is looped into one first.
         # d=1 with a per-frame zoom is what makes it a move rather than a slideshow.
+        #
+        # The step is computed from THIS song's length rather than fixed; see
+        # zoom_step for what the fixed one did.
+        step = zoom_step(dur)
+        # And the bed is oversampled by the zoom factor, not by two. At full
+        # zoom the crop is 1/1.12 of the source, so 1.12x output is the smallest
+        # size that never upscales — and it is a third of the pixels 2x pushed
+        # through zoompan every frame, on a container with one core.
+        bed_w, bed_h = int(width * ZOOM_MAX), int(height * ZOOM_MAX)
         chain = (
-            f"[0:v]scale={width * 2}:{height * 2}:force_original_aspect_ratio=increase,"
-            f"crop={width * 2}:{height * 2},"
-            f"zoompan=z='min(zoom+0.00008,1.12)':d=1:s={width}x{height}:fps=25,"
+            f"[0:v]scale={bed_w}:{bed_h}:force_original_aspect_ratio=increase,"
+            f"crop={bed_w}:{bed_h},"
+            f"zoompan=z='min(zoom+{step:.8f},{ZOOM_MAX})':d=1:s={width}x{height}:fps=25,"
             f"boxblur=luma_radius=28:luma_power=2,eq=brightness=-0.16:saturation=0.85[bed];"
             f"[0:v]scale={int(height * 0.42)}:{int(height * 0.42)}[art];"
             f"[bed][art]overlay=(W-w)/2:{int(height * 0.16)}[bg];"
@@ -229,6 +292,7 @@ def lyric_video(audio: Path, lrc: Path, dest: Path, *,
                  "-t", f"{dur:.2f}", "-movflags", "+faststart", str(dest)],
                 f"lyric video for {dest.name}")
     ass.unlink(missing_ok=True)
+    verify(dest, expect_s=dur)
     return dest
 
 
@@ -306,6 +370,10 @@ def hook_short(clips: list[Path], audio: Path, dest: Path, *,
              "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
              "-t", f"{duration_s:.2f}", "-movflags", "+faststart", str(dest)],
             f"hook short for {dest.name}")
+    # Same check as the lyric video, for the same reason: this file goes to a
+    # platform that will reject it silently, and an exit code of zero from
+    # ffmpeg is not evidence it plays.
+    verify(dest, expect_s=duration_s)
     return dest
 
 

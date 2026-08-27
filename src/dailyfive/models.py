@@ -1,4 +1,4 @@
-"""The eight tables.
+"""The ten tables.
 
 Two consumers with different needs share this schema. The Conductor needs
 crash-safe resume: every externally-visible action is recorded before it is
@@ -392,3 +392,80 @@ class Outcome(Base):
                                                  onupdate=utcnow)
 
     clip: Mapped["Clip"] = relationship(back_populates="outcome")
+
+
+class Publication(Base):
+    """One upload of one song to one platform, and what the platform did with it.
+
+    Separate from ``Outcome`` rather than more columns on it, because they
+    answer different questions and arrive at different times. An Outcome is one
+    row per clip and holds a judgement. This is one row per clip PER PLATFORM
+    and holds a measurement — the same song on TikTok and on YouTube is two
+    numbers, and averaging them into a single ``plays`` column would throw away
+    the only comparison in the system that says anything about where this music
+    actually lands.
+
+    ``metrics`` keeps whatever the platform returned verbatim beside the four
+    counts that are pulled out of it. The counts are what the learning loop
+    reads; the blob is what makes it possible to answer a question later that
+    nobody thought to add a column for.
+    """
+    __tablename__ = "publications"
+    __table_args__ = (UniqueConstraint("clip_id", "platform", name="uq_publication"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    clip_id: Mapped[int] = mapped_column(ForeignKey("clips.id", ondelete="CASCADE"),
+                                         index=True)
+    platform: Mapped[str] = mapped_column(String(16), index=True)   # youtube | tiktok
+
+    # Recorded before the upload finishes, so a process that dies mid-upload
+    # leaves evidence rather than a silent gap — the same reason Job carries an
+    # idempotency key.
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    external_id: Mapped[str | None] = mapped_column(String(120), index=True)
+    url: Mapped[str | None] = mapped_column(String(400))
+    error: Mapped[str | None] = mapped_column(Text)
+
+    views: Mapped[int | None] = mapped_column(Integer)
+    likes: Mapped[int | None] = mapped_column(Integer)
+    comments: Mapped[int | None] = mapped_column(Integer)
+    shares: Mapped[int | None] = mapped_column(Integer)
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    metrics_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow,
+                                                 onupdate=utcnow)
+
+
+class OAuthToken(Base):
+    """One platform's credentials, kept where they can be rewritten.
+
+    In the database and not in the environment, for a reason specific to these
+    two APIs: a refresh token here is not a constant. TikTok issues a NEW
+    refresh token on every refresh and expires the old one, so a credential
+    held in an env var is single-use — it works once, rotates, and the next
+    refresh fails with a token the process could not persist. Anything that has
+    to survive its own use has to live somewhere writable.
+
+    That makes this the one table in the schema holding a live secret, which is
+    why backup.py excludes its contents. A nightly dump of the catalogue is not
+    a thing that should also be a set of working credentials for the accounts
+    the catalogue is published to.
+    """
+    __tablename__ = "oauth_tokens"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    platform: Mapped[str] = mapped_column(String(16), unique=True, index=True)
+
+    access_token: Mapped[str | None] = mapped_column(Text)
+    refresh_token: Mapped[str | None] = mapped_column(Text)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Whose account this posts to. Not used to authenticate anything — it is
+    # here so a log line can say which channel a video went to when there is
+    # more than one, and so a swapped credential is visible rather than silent.
+    account_id: Mapped[str | None] = mapped_column(String(120))
+    scope: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow,
+                                                 onupdate=utcnow)

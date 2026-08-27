@@ -39,9 +39,19 @@ log = logging.getLogger(__name__)
 
 CHROMIUM = "/opt/pw-browsers/chromium"
 
-# Below this many frames the capture did not work and the caller should fall
-# back rather than ship four seconds of stills as a five-minute video.
-MIN_FPS = 4.0
+# Below this the capture did not work well enough to be worth having and the
+# caller should fall back.
+#
+# It was 4.0, which is not a floor, it is a rumour of one: a capture that
+# managed 5.4 fps under CPU contention passed it, and 5.4 fps of kinetic
+# typography resampled to 25 is a slideshow — every word holds for five frames
+# and the arrivals land nowhere near the beat they were written for. The
+# benchmark on an idle machine is about 14.7 fps, so 12 accepts a capture that
+# is merely busy and rejects one that has genuinely fallen over. The thing on
+# the other side of this decision is not "no video": it is the ffmpeg path,
+# which is a solid 25 fps with less interesting text. That is the better
+# trade below twelve.
+MIN_FPS = 12.0
 
 
 class BrowserUnavailable(RuntimeError):

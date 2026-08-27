@@ -44,8 +44,12 @@ def test_frame_timings_come_from_the_page_not_the_frame_rate(tmp_path):
 
 
 def test_a_sparse_capture_is_refused():
-    """Four seconds of stills stretched over a song is worse than the fallback."""
-    assert browser.MIN_FPS >= 4.0
+    """A slideshow is worse than the fallback, and the fallback is 25 fps.
+
+    The bar is 12 rather than 4 because a real capture at 5.4 fps passed the old
+    one: resampled to 25, every word holds for five frames and the arrivals land
+    nowhere near the beat they were written for."""
+    assert browser.MIN_FPS >= 12.0
 
 
 def test_lines_survive_the_json_round_trip():

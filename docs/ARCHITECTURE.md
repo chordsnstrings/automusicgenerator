@@ -359,6 +359,9 @@ also receives your daily ratings, so there is only one public surface to secure.
 | MiniMax | any reasoning role; optional second music supplier | 8 roles | verified live on the full roster; music billing needs PAYG, not just a plan key |
 | BytePlus ModelArk | cover art (Seedream); optional video loops (Seedance) | Packager | no text models exposed — art only. **Not configured**: no key, so no covers |
 | Any brain | Scout, Director, A&R, Lyricist, Clearance, Producer, Retro, Video Director | 8 roles | set by `LLM_DEFAULT`; per-role overrides |
+| MiniMax video | the short's footage (Hailuo image-to-video) | shorts.py | 3 generations a day free; 768P does 6 or 10s, 1080P does 6 only |
+| YouTube Data API v3 | publishing the lyric video, reading view counts | publish/ | **Not configured**: needs one OAuth consent |
+| TikTok Content Posting | publishing the short, reading view/share counts | publish/ | **Not configured**: needs one OAuth consent; an unaudited app can only post SELF_ONLY |
 | ffmpeg | QC measurement, mastering, MP3 encode | QC, Packager | local, free, deterministic |
 | DO Spaces | every artefact, forever | Conductor, Packager | S3-compatible; set a lifecycle rule |
 
@@ -531,6 +534,7 @@ src/dailyfive/
 ├── pipeline.py      the five phases, with resume
 ├── cli.py           operator commands
 ├── agents/          the eight roles that need a model
+├── publish/         upload to TikTok and YouTube, then read the counts back
 ├── providers/       suno, minimax, modelark
 ├── signals/         the seven free feeds
 └── web/             callback receiver, rating endpoint, the delivered day page
