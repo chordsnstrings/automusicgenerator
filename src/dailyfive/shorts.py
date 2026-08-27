@@ -55,6 +55,7 @@ class Short:
     start_s: float = 0.0
     duration_s: float = 0.0
     reused: list[str] = field(default_factory=list)
+    stored_url: str | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -203,3 +204,104 @@ def _data_uri(path: Path) -> str:
     """
     return ("data:image/jpeg;base64,"
             + base64.b64encode(path.read_bytes()).decode())
+
+
+# ── choosing the song, and getting its parts back off the shelf ──────────────
+def build_for_day(*, clip_id: int | None = None, run_date: date | None = None,
+                  out: str | None = None, force: bool = False,
+                  upload: bool = True) -> Short:
+    """Build the short for one song, or for the day's best if none is named.
+
+    The best-scoring shipped song, because the Producer has already ranked them
+    and the allowance pays for exactly one short a day. Picking by score rather
+    than by slot means the day the ranking changes, so does the video.
+
+    This lives here rather than in the CLI because the scheduler needs the same
+    thing at half past six every morning, and a worker that shells out to its own
+    command line to do it is a worker with a second failure mode.
+    """
+    from sqlalchemy import select
+
+    from .db import session_scope
+    from .errors import DailyFiveError
+    from .models import Brief, Clip, Run
+
+    with session_scope() as s:
+        if clip_id:
+            clip = s.get(Clip, clip_id)
+            if clip is None:
+                raise DailyFiveError(f"no clip {clip_id}")
+        else:
+            day = run_date or date.today()
+            run = s.execute(select(Run)
+                            .where(Run.run_date == day)).scalar_one_or_none()
+            if run is None:
+                raise DailyFiveError(f"no run for {day}")
+            clip = s.execute(
+                select(Clip).where(Clip.run_id == run.id, Clip.shipped.is_(True))
+                .order_by(Clip.score_total.desc().nullslast())).scalars().first()
+            if clip is None:
+                raise DailyFiveError(f"nothing shipped on {day}")
+
+        brief_row = s.get(Brief, clip.brief_id)
+        run_row = s.get(Run, clip.run_id)
+        brief = {
+            "title": clip.title or (brief_row.title if brief_row else None),
+            "theme": clip.theme or (brief_row.theme if brief_row else ""),
+            "style_string": clip.style_string,
+            "bpm": brief_row.bpm if brief_row else None,
+            "hook_note": (brief_row.payload or {}).get("hook_note") if brief_row else None,
+        }
+        chosen, when, key_prefix = clip.id, run_row.run_date, clip.spaces_key
+
+    work = settings().work_dir / "shorts" / str(chosen)
+    audio, lrc = materialise(key_prefix, work)
+    if audio is None:
+        raise DailyFiveError(f"clip {chosen} has no delivered audio to cut against")
+
+    dest = Path(out) if out else work / "short.mp4"
+    result = make(clip_id=chosen, brief=brief, audio=audio, lrc=lrc,
+                  run_date=when, dest=dest, work=work, force=force)
+
+    if upload and key_prefix:
+        from .storage import open_store
+        store = open_store()
+        stored = f"{key_prefix.rstrip('/')}/short.mp4"
+        store.upload(dest, stored, clip_id=chosen)
+        result.stored_url = store.signed_url(stored)
+    return result
+
+
+def materialise(key_prefix: str | None, work: Path) -> tuple[Path | None, Path | None]:
+    """Bring a delivered song's master and lyric file back to local disk.
+
+    Three stores are possible and only one of them can hand over bytes directly,
+    so this asks for a fetch and falls back to the URL the store would serve a
+    browser. Guessing which store is in use from configuration would be a fourth
+    thing to keep in step.
+    """
+    if not key_prefix:
+        return None, None
+    from .storage import open_store
+
+    store = open_store()
+    work.mkdir(parents=True, exist_ok=True)
+    got: list[Path | None] = []
+    for name in ("master.wav", "lyrics.lrc"):
+        key = f"{key_prefix.rstrip('/')}/{name}"
+        dest = work / name
+        if dest.is_file() and dest.stat().st_size > 0:
+            got.append(dest)
+            continue
+        fetched = getattr(store, "fetch", lambda _k: None)(key)
+        if fetched:
+            dest.write_bytes(fetched[0])
+            got.append(dest)
+            continue
+        try:
+            download(store.signed_url(key), dest, provider="store")
+            got.append(dest)
+        except Exception as exc:
+            log.warning("could not fetch %s: %s", key, exc)
+            got.append(None)
+    return got[0], got[1]

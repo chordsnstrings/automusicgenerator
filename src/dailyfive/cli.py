@@ -375,103 +375,22 @@ def cmd_today(args) -> int:
 
 
 def cmd_short(args) -> int:
-    """Build the vertical short for one delivered song.
-
-    Picks the day's best-scoring shipped song when no clip id is given, because
-    the Producer has already ranked them and the allowance only pays for one.
-    """
+    """Build the vertical short for one delivered song."""
     init_db()
-    from pathlib import Path
-
     from . import shorts
+    from .errors import DailyFiveError as _E
 
-    with session_scope() as s:
-        if args.clip_id:
-            clip = s.get(Clip, args.clip_id)
-            if clip is None:
-                print(f"no clip {args.clip_id}")
-                return 1
-        else:
-            run_date = _parse_date(args.date)
-            run = s.execute(select(Run).where(Run.run_date == run_date)).scalar_one_or_none()
-            if run is None:
-                print(f"no run for {run_date}")
-                return 1
-            clip = s.execute(
-                select(Clip).where(Clip.run_id == run.id, Clip.shipped.is_(True))
-                .order_by(Clip.score_total.desc().nullslast())).scalars().first()
-            if clip is None:
-                print(f"nothing shipped on {run_date}")
-                return 1
-
-        brief_row = s.get(Brief, clip.brief_id)
-        run_row = s.get(Run, clip.run_id)
-        brief = {
-            "title": clip.title or (brief_row.title if brief_row else None),
-            "theme": clip.theme or (brief_row.theme if brief_row else ""),
-            "style_string": clip.style_string,
-            "bpm": brief_row.bpm if brief_row else None,
-            "hook_note": (brief_row.payload or {}).get("hook_note") if brief_row else None,
-        }
-        clip_id, run_date, spaces_key = clip.id, run_row.run_date, clip.spaces_key
-
-    work = settings().work_dir / "shorts" / str(clip_id)
-    audio, lrc = _materialise(spaces_key, work)
-    if audio is None:
-        print(f"clip {clip_id} has no delivered audio to cut against")
+    try:
+        result = shorts.build_for_day(
+            clip_id=args.clip_id, run_date=_parse_date(args.date),
+            out=args.out, force=args.force, upload=not args.no_upload)
+    except _E as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 1
-
-    dest = Path(args.out) if args.out else work / "short.mp4"
-    result = shorts.make(clip_id=clip_id, brief=brief, audio=audio, lrc=lrc,
-                         run_date=run_date, dest=dest, work=work,
-                         force=args.force)
     print(json.dumps(result.as_dict(), indent=2))
-
-    if not args.no_upload and spaces_key:
-        from .storage import open_store
-
-        store = open_store()
-        key = f"{spaces_key.rstrip('/')}/short.mp4"
-        store.upload(dest, key, clip_id=clip_id)
-        print(f"\nstored at {store.signed_url(key)}")
+    if result.stored_url:
+        print(f"\nstored at {result.stored_url}")
     return 0
-
-
-def _materialise(spaces_key: str | None, work) -> tuple:
-    """Bring a delivered song's master and lyric file back to local disk.
-
-    Three stores are possible and only one of them can hand over bytes
-    directly, so this asks for a fetch and falls back to the URL the store
-    would serve a browser. Neither path is a special case of the other and
-    guessing which store is in use from configuration would be a fourth thing
-    to keep in step.
-    """
-    if not spaces_key:
-        return None, None
-    from .storage import open_store
-
-    store = open_store()
-    work.mkdir(parents=True, exist_ok=True)
-    out: list = []
-    for name in ("master.wav", "lyrics.lrc"):
-        key = f"{spaces_key.rstrip('/')}/{name}"
-        dest = work / name
-        if dest.is_file() and dest.stat().st_size > 0:
-            out.append(dest)
-            continue
-        got = getattr(store, "fetch", lambda _k: None)(key)
-        if got:
-            dest.write_bytes(got[0])
-            out.append(dest)
-            continue
-        try:
-            from .http import download
-            download(store.signed_url(key), dest, provider="store")
-            out.append(dest)
-        except Exception as exc:
-            log.warning("could not fetch %s: %s", key, exc)
-            out.append(None)
-    return out[0], out[1]
 
 
 def cmd_publish(args) -> int:

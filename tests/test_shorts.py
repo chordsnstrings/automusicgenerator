@@ -239,3 +239,67 @@ def test_a_cached_shot_list_of_the_wrong_length_is_replanned(wired, tmp_path):
                       work=work, shots=2)
     assert len(out.shots) == 2
     assert "shots" not in out.reused
+
+
+# ── choosing the song ────────────────────────────────────────────────────────
+def test_the_days_best_scoring_song_gets_the_short(monkeypatch, wired, tmp_path,
+                                                   brief_factory, run_id):
+    """One short a day, so it goes to whichever song the Producer ranked first."""
+    from dailyfive.db import session_scope
+    from dailyfive.models import Clip, Job, JobState, SlotType
+
+    ids = []
+    for i, score in enumerate((4.0, 9.0, 6.0)):
+        brief_id = brief_factory(i)
+        with session_scope() as s:
+            job = Job(run_id=run_id, brief_id=brief_id, state=JobState.SUCCESS,
+                      idempotency_key=f"k{i}")
+            s.add(job)
+            s.flush()
+            clip = Clip(run_id=run_id, job_id=job.id, brief_id=brief_id,
+                        audio_id=f"a{i}", slot_type=SlotType.FULL,
+                        title=f"Song {i}", shipped=True, score_total=score,
+                        spaces_key=f"songs/2026-08-27/0{i}_song-{i}")
+            s.add(clip)
+            s.flush()
+            ids.append(clip.id)
+
+    chosen = {}
+
+    def fake_materialise(prefix, work):
+        chosen["prefix"] = prefix
+        work.mkdir(parents=True, exist_ok=True)
+        (work / "master.wav").write_bytes(b"audio")
+        return work / "master.wav", None
+
+    monkeypatch.setattr(shorts, "materialise", fake_materialise)
+    out = shorts.build_for_day(run_date=date(2026, 8, 27), upload=False,
+                               out=str(tmp_path / "s.mp4"))
+    assert out.clip_id == ids[1]
+    assert "01_song-1" in chosen["prefix"]
+
+
+def test_a_day_with_nothing_shipped_says_so_rather_than_building(run_id):
+    from dailyfive.errors import DailyFiveError
+    with pytest.raises(DailyFiveError, match="nothing shipped"):
+        shorts.build_for_day(run_date=date(2026, 8, 27))
+
+
+def test_a_song_with_no_delivered_audio_is_refused(monkeypatch, brief_factory,
+                                                   run_id):
+    from dailyfive.db import session_scope
+    from dailyfive.errors import DailyFiveError
+    from dailyfive.models import Clip, Job, JobState, SlotType
+
+    brief_id = brief_factory(0)
+    with session_scope() as s:
+        job = Job(run_id=run_id, brief_id=brief_id, state=JobState.SUCCESS,
+                  idempotency_key="k")
+        s.add(job)
+        s.flush()
+        s.add(Clip(run_id=run_id, job_id=job.id, brief_id=brief_id, audio_id="a",
+                   slot_type=SlotType.FULL, shipped=True, score_total=5.0))
+
+    monkeypatch.setattr(shorts, "materialise", lambda p, w: (None, None))
+    with pytest.raises(DailyFiveError, match="no delivered audio"):
+        shorts.build_for_day(run_date=date(2026, 8, 27))

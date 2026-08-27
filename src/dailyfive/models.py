@@ -348,7 +348,7 @@ class StoredFile(Base):
     clip_id: Mapped[int | None] = mapped_column(
         ForeignKey("clips.id", ondelete="SET NULL"), index=True)
 
-    kind: Mapped[str] = mapped_column(String(24), index=True)   # wav | mp3 | cover | text
+    kind: Mapped[str] = mapped_column(String(24), index=True)   # wav | mp3 | cover | video | text
     content_type: Mapped[str] = mapped_column(String(120), default="application/octet-stream")
     size_bytes: Mapped[int] = mapped_column(Integer, default=0)
     sha256: Mapped[str | None] = mapped_column(String(64))

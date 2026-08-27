@@ -38,12 +38,20 @@ log = logging.getLogger(__name__)
 # backup taken before the fix reintroduces the false ones exactly as it
 # reintroduces the wrong content types, and a repair that only ever ran once is
 # a repair nobody can rerun.
+# short and metrics both follow the run rather than joining it. The short costs
+# two of three daily video generations and takes ten minutes of polling, and a
+# provider being out of allowance must never be able to cost the day its music —
+# so it is a separate slot, after delivery, on a song that already exists.
+# metrics reads yesterday's counts and touches nothing else; it is last because
+# it is the only slot whose value goes up the later it runs.
 SLOTS = (
     ("purge", 3, 0),
     ("retype", 3, 5),
     ("remeta", 3, 10),
     ("backup", 4, 30),
     ("run", 5, 10),
+    ("short", 6, 30),
+    ("metrics", 7, 0),
 )
 
 
@@ -113,6 +121,12 @@ def _fire(name: str) -> None:
             from .backup import dump
             path = dump()
             log.info("backup: %s (%.1f MB)", path, path.stat().st_size / 1e6)
+        elif name == "short":
+            from .shorts import build_for_day
+            log.info("short: %s", build_for_day().as_dict())
+        elif name == "metrics":
+            from .publish import refresh
+            log.info("metrics: %s", refresh())
     except Exception:
         # A failed slot must not take the worker down — tomorrow's run is
         # still wanted, and App Platform restarting the container in a loop

@@ -20,9 +20,25 @@ def _at(hour, minute):
 
 
 def test_slots_are_ordered_so_nothing_races_the_run():
-    """Backup wants a quiet database; purge must never race a run mid-write."""
-    order = [name for name, _, _ in scheduler.SLOTS]
-    assert order == ["purge", "retype", "remeta", "backup", "run"]
+    """Backup wants a quiet database; purge must never race a run mid-write.
+
+    The invariant rather than the list, so adding a slot after the run — the
+    short, the metrics readback — does not fail a test about what comes BEFORE
+    it. What matters is that the housekeeping is finished before the run starts
+    and that the wall-clock order matches the tuple order, since the loop fires
+    them in sequence within one tick.
+    """
+    times = [(h, m) for _, h, m in scheduler.SLOTS]
+    assert times == sorted(times), "slots must be in wall-clock order"
+
+    at = {name: (h, m) for name, h, m in scheduler.SLOTS}
+    for housekeeping in ("purge", "retype", "remeta", "backup"):
+        assert at[housekeeping] < at["run"], f"{housekeeping} races the run"
+
+    # And the two that spend a provider allowance come after delivery, so a
+    # provider being out of credit can never cost the day its music.
+    for after in ("short", "metrics"):
+        assert at[after] > at["run"]
     times = [h * 60 + m for _, h, m in scheduler.SLOTS]
     assert times == sorted(times), "slots must fire in clock order"
     run_at = next(h * 60 + m for n, h, m in scheduler.SLOTS if n == "run")

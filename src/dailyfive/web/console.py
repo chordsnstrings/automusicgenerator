@@ -95,6 +95,10 @@ a.q:hover{border-color:var(--hot)}
 .p-ok{color:var(--ok)} .p-bad{color:var(--bad)} .p-hot{color:var(--hot)}
 .p-dim{color:var(--faint)} .p-cool{color:var(--cool)}
 .mini{color:var(--faint);font-size:.72rem}
+/* The one line on a song card that is a measurement rather than a
+   property, so it sits above the rating buttons and is not faint. */
+.reach{color:var(--dim);margin:.4rem 0 .1rem}
+.reach a{color:var(--cool)}
 .empty{color:var(--faint);padding:1.5rem;text-align:center;background:var(--card);
        border:1px dashed var(--rule);border-radius:4px;font-size:.82rem}
 pre{background:var(--well);border:1px solid var(--rule);border-radius:4px;

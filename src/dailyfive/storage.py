@@ -57,6 +57,11 @@ CONTENT_TYPES = {
     ".lrc": "text/plain; charset=utf-8",
     ".json": "application/json",
     ".html": "text/html; charset=utf-8",
+    # Pinned for the same reason as .wav: guess_type consults /etc/mime.types,
+    # which python:3.12-slim does not carry, so an unpinned .mp4 would be
+    # announced as application/octet-stream in production and video/mp4 on a
+    # developer box — and a browser downloads the first rather than playing it.
+    ".mp4": "video/mp4",
     # A backup is dailyfive-<stamp>.sql.gz, and guess_type answers
     # ('application/sql', 'gzip') — both callers take [0] and drop the encoding,
     # so the bytes of a gzip stream would be announced as SQL text. RFC 6713's
@@ -362,6 +367,11 @@ def _kind_for(key: str, content_type: str) -> str:
         return "mp3"
     if name.endswith((".jpg", ".jpeg", ".png", ".webp")):
         return "cover"
+    # Its own kind, not "other". The purge, the retype pass and the storage
+    # summary all group by this column, and a 6 MB video filed under the same
+    # label as a stray text file is a number nobody can act on.
+    if name.endswith((".mp4", ".mov", ".webm")):
+        return "video"
     if content_type.startswith("text/") or name.endswith((".json", ".txt", ".lrc", ".html")):
         return "text"
     return "other"

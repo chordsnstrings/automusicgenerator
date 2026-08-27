@@ -9,15 +9,13 @@ reaches the codex as a rank rather than as a raw count.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
-
 import pytest
 from sqlalchemy import select
 
 from dailyfive import archivist, publish
 from dailyfive.db import session_scope
 from dailyfive.errors import ProviderError
-from dailyfive.models import Clip, Outcome, Publication, Run, SlotType, utcnow
+from dailyfive.models import Clip, Outcome, Publication, SlotType, utcnow
 
 
 @pytest.fixture

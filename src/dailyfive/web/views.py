@@ -16,7 +16,8 @@ from ..codex import scored as codex_scored
 from ..config import settings
 from ..db import session_scope
 from ..models import (AgentCall, Brief, Clip, CodexVersion, Decision, Job,
-                      Outcome, Run, RunPhase, Signal, StoredFile, utcnow)
+                      Outcome, Publication, Run, RunPhase, Signal, StoredFile,
+                      utcnow)
 from .console import (RATE_JS, ago, bar, dur, esc, jsonblock, ms, page, pill,
                       stats, table)
 
@@ -74,6 +75,7 @@ ROSTER = [
 # Basenames are fixed by the ship loop: every file in the clip folder is
 # uploaded under its own name (pipeline.py), source.wav deliberately excluded.
 FILE_LABELS = [("master.mp3", "MP3"), ("master.wav", "WAV"), ("cover.jpg", "Cover"),
+               ("short.mp4", "Short"), ("lyric.mp4", "Lyric video"),
                ("lyrics.txt", "Lyrics"), ("lyrics.lrc", "LRC"), ("meta.json", "Meta")]
 
 # On a same-origin link the download attribute forces a save whatever the
@@ -81,6 +83,10 @@ FILE_LABELS = [("master.mp3", "MP3"), ("master.wav", "WAV"), ("cover.jpg", "Cove
 # what a click does. Audio is worth saving — nobody wants a browser to navigate
 # to twelve megabytes of MP3 — while the three text artifacts are things you want
 # to read, and now can, since they are served as types a browser renders inline.
+# The two videos are deliberately NOT here. Audio is worth saving and text is
+# worth reading, but a video is worth watching — forcing a save on a click means
+# finding the file and opening it in something else to answer "did that cut land
+# on the beat", which is the only question anybody opens it to ask.
 DOWNLOADABLE = {"master.mp3", "master.wav", "cover.jpg"}
 
 # The names the ship loop writes for every clip it delivers. Cover art is
@@ -264,15 +270,57 @@ def _song_meta(c: Clip, persona: str | None) -> str:
     return esc(" · ".join(str(b) for b in bits))
 
 
+def _reach(pubs: list[dict]) -> str:
+    """Where this song was posted and what happened, or nothing at all.
+
+    Nothing at all is the honest render for an unpublished song. An empty
+    "0 views" would say the audience saw it and did not care, which is a
+    different and much worse fact than not having posted it yet.
+    """
+    if not pubs:
+        return ""
+    parts = []
+    for p in pubs:
+        name = p["platform"].replace("youtube", "YouTube").replace("tiktok", "TikTok")
+        if p["status"] != "live":
+            parts.append(f'{esc(name)} <span class="mini">{esc(p["status"])}</span>')
+            continue
+        # Views only once they have been read back. A live posting whose metrics
+        # have never been fetched is not a posting with no views.
+        count = (f'{p["views"]:,} views' if p.get("views") is not None
+                 else "posted")
+        label = f'{esc(name)} — {esc(count)}'
+        parts.append(f'<a href="{esc(p["url"])}">{label}</a>' if p.get("url") else label)
+    return f'<div class="mini reach">{" · ".join(parts)}</div>'
+
+
 def _song_card(c: Clip, persona: str | None, files: dict[str, str],
-               absent: tuple[str, str], rating: int | None, back: str) -> str:
+               absent: tuple[str, str], rating: int | None, back: str,
+               pubs: list[dict] | None = None) -> str:
     no_audio, no_files = absent
     return (f'<div class="song" id="clip{int(c.id)}">'
             f'<div class="ttl">{esc(c.title or "untitled")}</div>'
             f'<div class="mini">{_song_meta(c, persona)}</div>'
             f'{_player(files, no_audio, preload="metadata")}'
             f'<div>{_links(files, no_files)}</div>'
+            f'{_reach(pubs or [])}'
             f'{_rate(c.id, rating, back)}</div>')
+
+
+def _publications(s, clip_ids: list[int]) -> dict[int, list[dict]]:
+    """{clip_id: [publication, ...]} in one query rather than one per card."""
+    if not clip_ids:
+        return {}
+    rows = s.execute(select(Publication)
+                     .where(Publication.clip_id.in_(clip_ids))
+                     .order_by(Publication.platform)).scalars().all()
+    out: dict[int, list[dict]] = {}
+    for r in rows:
+        out.setdefault(r.clip_id, []).append({
+            "platform": r.platform, "status": r.status, "url": r.url,
+            "views": r.views, "likes": r.likes,
+        })
+    return out
 
 
 def _delivered_link(href: str | None) -> str:
@@ -426,6 +474,7 @@ def _todays_songs(s) -> str:
     sign, absent, _note = _elsewhere()
     files = _hrefs(s, clips, sign)
     ratings = _ratings(s, [c.id for c in clips])
+    pubs = _publications(s, [c.id for c in clips])
     day_pages = _day_pages(s, [c.spaces_key for c in clips], sign)
     folders = [c.spaces_key.rsplit("/", 1)[0] for c in clips
                if c.spaces_key and "/" in c.spaces_key]
@@ -433,7 +482,8 @@ def _todays_songs(s) -> str:
 
     day = latest.isoformat()
     cards = "".join(
-        _song_card(c, persona, files.get(c.id, {}), absent, ratings.get(c.id), "/")
+        _song_card(c, persona, files.get(c.id, {}), absent, ratings.get(c.id),
+                   "/", pubs.get(c.id))
         for c, persona in rows)
     return "".join([
         f'<h2>{esc(day)} — the latest set <a href="/runs/{esc(day)}">run</a>'

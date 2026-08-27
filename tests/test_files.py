@@ -226,3 +226,24 @@ def test_head_does_not_read_the_bytes_it_reports_the_length_of(client, store, mo
     assert r.content == b""
     assert calls == [], "HEAD streamed the file it was only asked the size of"
     assert peak < 8 << 20, f"peaked at {peak / 1e6:.1f} MB answering a HEAD"
+
+
+def test_a_video_is_announced_as_a_video_and_filed_as_one():
+    """Unpinned, guess_type answers video/mp4 on a developer box and nothing at
+    all in python:3.12-slim — and a browser downloads the nothing rather than
+    playing it. The kind is its own too: a 6 MB short filed beside a stray text
+    file is a storage number nobody can act on."""
+    from dailyfive.storage import _kind_for, content_type_for
+    assert content_type_for("short.mp4") == "video/mp4"
+    assert _kind_for("songs/2026-08-27/01_x/short.mp4", "video/mp4") == "video"
+    assert _kind_for("songs/2026-08-27/01_x/lyric.mp4", "video/mp4") == "video"
+
+
+def test_the_videos_open_rather_than_download():
+    """Audio is worth saving and text is worth reading, but the only question
+    anyone opens a short to ask is whether the cut landed on the beat."""
+    from dailyfive.web.views import DOWNLOADABLE, FILE_LABELS
+    names = [n for n, _ in FILE_LABELS]
+    assert "short.mp4" in names and "lyric.mp4" in names
+    assert "short.mp4" not in DOWNLOADABLE
+    assert "lyric.mp4" not in DOWNLOADABLE

@@ -283,3 +283,33 @@ def test_the_day_page_offers_no_undo_until_there_is_a_rating():
                     api_base="https://songs.test")
     assert '<button class="clear" hidden>' in html
     assert ".clear').hidden = score==null" in html
+
+
+def test_an_unpublished_song_shows_no_reach_at_all():
+    """An empty "0 views" says the audience saw it and did not care, which is a
+    different and much worse fact than not having posted it yet."""
+    from dailyfive.web.views import _reach
+    assert _reach([]) == ""
+
+
+def test_a_live_posting_with_no_readback_yet_does_not_claim_zero():
+    from dailyfive.web.views import _reach
+    html = _reach([{"platform": "tiktok", "status": "live",
+                    "url": "https://x/1", "views": None}])
+    assert "TikTok" in html and "posted" in html
+    assert "0 views" not in html
+
+
+def test_view_counts_render_with_their_link():
+    from dailyfive.web.views import _reach
+    html = _reach([{"platform": "youtube", "status": "live",
+                    "url": "https://y/2", "views": 40210}])
+    assert "40,210 views" in html
+    assert 'href="https://y/2"' in html
+
+
+def test_a_failed_publication_says_so_rather_than_vanishing():
+    from dailyfive.web.views import _reach
+    html = _reach([{"platform": "youtube", "status": "failed",
+                    "url": None, "views": None}])
+    assert "failed" in html
