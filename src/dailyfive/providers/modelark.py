@@ -20,6 +20,10 @@ PROVIDER = "modelark"
 # Hard ceiling is 16,777,216 pixels; 3000x3000 is 9,000,000.
 COVER_SIZE = "3000x3000"
 
+# 9:16 for the short's reference frame, at the resolution the video model
+# generates into. Larger buys nothing: the still is only ever the first frame.
+STILL_SIZE = "1080x1920"
+
 
 class ModelArkClient:
     def __init__(self, api_key: str | None = None, base_url: str | None = None,
@@ -62,3 +66,14 @@ class ModelArkClient:
             raise ProviderError(PROVIDER, f"no image URL in response: {str(data)[:300]}",
                                 retryable=True)
         return items[0]["url"]
+
+    def still(self, prompt: str, *, size: str = STILL_SIZE) -> str:
+        """The short's reference frame — the same call, in portrait.
+
+        Separate from :meth:`cover` only in shape, but the shape is the point.
+        Every clip in a short animates from this one image, so it has to arrive
+        already 9:16: a square still cropped to vertical afterwards loses the
+        head or the feet, and the generator would then be animating a frame that
+        was never composed for the format.
+        """
+        return self.cover(prompt, size=size)

@@ -88,6 +88,7 @@ class Settings:
     minimax_api_key: str = field(default_factory=lambda: _s("MINIMAX_API_KEY"))
     minimax_base_url: str = field(default_factory=lambda: _s("MINIMAX_BASE_URL", "https://api.minimax.io").rstrip("/"))
     minimax_text_model: str = field(default_factory=lambda: _s("MINIMAX_TEXT_MODEL", "MiniMax-M3"))
+    minimax_video_model: str = field(default_factory=lambda: _s("MINIMAX_VIDEO_MODEL", "MiniMax-Hailuo-2.3"))
 
     # Brain routing — any role can run on any provider.
     llm_default: str = field(default_factory=lambda: _s("LLM_DEFAULT", "anthropic"))
@@ -100,6 +101,20 @@ class Settings:
     ark_base_url: str = field(default_factory=lambda: _s(
         "ARK_BASE_URL", "https://ark.ap-southeast.bytepluses.com/api/v3").rstrip("/"))
     ark_image_model: str = field(default_factory=lambda: _s("ARK_IMAGE_MODEL", "seedream-5-0-260128"))
+
+    # The vertical short. Two ten-second clips is the free allowance spent
+    # well: the hook is about twenty seconds, and two takes is the fewest that
+    # can be cut rather than looped.
+    #
+    # VIDEO_ and not SHORT_, though "short" is what the format is called
+    # everywhere else in this file. SHORT_BRIEFS, SHORT_SLOTS and
+    # SHORT_DURATION_S already exist and mean the 30-60 second LOOPING SONG
+    # lane — so SHORT_DURATION_S beside a video module would read as the length
+    # of the video, be set to 20 by someone reasonable, and quietly reconfigure
+    # the music instead.
+    video_clips: int = field(default_factory=lambda: _i("VIDEO_CLIPS", 2))
+    video_clip_seconds: int = field(default_factory=lambda: _i("VIDEO_CLIP_SECONDS", 10))
+    video_resolution: str = field(default_factory=lambda: _s("VIDEO_RESOLUTION", "768P"))
 
     # Spaces
     spaces_key: str = field(default_factory=lambda: _s("SPACES_KEY"))
