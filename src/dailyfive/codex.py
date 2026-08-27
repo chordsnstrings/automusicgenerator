@@ -50,7 +50,7 @@ SEED_CODEX: dict[str, Any] = {
         ],
     },
     "hook_placement": {
-        "full": "first chorus lands by 0:35; a recognisable motif inside the first 12s",
+        "full": "a recognisable motif inside the first 7 seconds — the opening is what gets clipped and posted, and a hook at 0:35 is half a minute nobody stays for; first chorus by 0:35",
         "short": "hook inside the first 2 seconds; loop seam must be inaudible",
     },
     "mix_targets": {

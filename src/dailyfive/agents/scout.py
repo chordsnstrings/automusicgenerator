@@ -46,10 +46,28 @@ Known limits of this stack, which you must respect rather than paper over:
 on TikTok. If a theme's evidence is thin, say so in the confidence score.
 - Feeds marked unavailable contributed nothing. Do not invent evidence from them.
 
-For each theme give a specific emotional situation, not a genre or a mood word. \
-"Missing someone you chose to leave" is a theme. "Sad" is not. "Summer vibes" is \
-not. Concrete, human, and specific enough that two different lyricists would \
-write recognisably different songs from it.
+For each theme give a situation a stranger can put themselves inside. Concrete \
+enough that two lyricists would write different songs from it, and universal \
+enough that someone recognises their own life in it rather than reading about \
+yours.
+
+"Missing someone you chose to leave" is a theme: exact in feeling, universal in \
+fact, inhabitable by anyone who has left someone. "A widow denied entry to her \
+husband's cremation" is NOT a theme — it is a report. It is somebody else's \
+tragedy and nobody can stand inside it. "Sad" is not a theme either; it is a \
+temperature.
+
+Apply this test to every theme before you return it: could a stranger use a song \
+about this to soundtrack their own life — a gym set, a breakup, a getting-ready \
+video, a win, a bad week? If not, you have written journalism. Replace it.
+
+Weight energy as well as feeling. What travels is more often forward-leaning \
+than despairing — not because sadness does not travel, but because a listener \
+has to want to stay in the room. Your leading feed is a search index, and people \
+search what alarms them, so a day of raw feeds will skew to catastrophe. That is \
+a property of the instrument, not of the world. When the feeds are uniformly \
+grim, find the defiance, the release or the absurdity inside them rather than \
+reporting the grief back.
 
 Never name a living recording artist as a stylistic target."""
 

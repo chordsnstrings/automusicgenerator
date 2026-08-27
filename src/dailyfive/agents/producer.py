@@ -52,13 +52,22 @@ how little dead air.
 
 Do not speculate about anything the metrics do not show. You cannot hear these.""",
 
-    "trend": """Score each candidate on FIT TO TODAY'S SIGNAL SHEET.
+    "trend": """Score each candidate on WHETHER A STRANGER COULD USE IT.
 
-How directly does this song serve one of today's ranked themes, and how leading \
-was the evidence behind that theme? A song that nails a theme backed by leading \
-evidence scores highest. A well-made song about nothing in particular scores in \
-the middle. A song chasing a lagging theme scores low — that moment already \
-happened.""",
+This studio ships to short-form video, where a song succeeds when someone \
+reaches for it to soundtrack their own life. Score what a creator would DO with \
+this record, not what it is about.
+
+Highest: the opening seconds establish something a person would loop, and the \
+feeling is one a stranger can claim as theirs.
+Middle: well made, but the listener is watching somebody else's story rather \
+than standing inside it.
+Lowest: it needs the whole song to make sense, or it belongs to one specific \
+event that happened to someone else.
+
+A song that serves today's theme perfectly but that nobody could use scores LOW. \
+Being about the news is not an advantage. Today's signal sheet tells you what \
+feelings are available, not what the song owes to a headline.""",
 }
 
 # Only a short-form brief asks Suno for a length, so with the short lane off every
