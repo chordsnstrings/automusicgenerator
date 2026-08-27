@@ -40,7 +40,9 @@ FIXED_TERMS = (
     "Adult woman in her early twenties, clearly of adult age, mature adult "
     "features. Fully clothed in ordinary streetwear. Dancing, non-sexualised, "
     "no suggestive posing, no revealing clothing, no close-up on body parts. "
-    "Natural realistic proportions. No text, no watermark, no logos, no captions."
+    "Natural realistic proportions. Her reflection in the mirror matches her "
+    "exactly, same clothes, same pose, correct perspective. "
+    "No text, no watermark, no logos, no captions."
 )
 
 # Refused outright rather than filtered, because a negative prompt is a request
@@ -65,24 +67,42 @@ class Performer:
 # wardrobe and setting only; every one of them is dancing, adult and clothed
 # because FIXED_TERMS says so for all of them at once.
 CAST: tuple[Performer, ...] = (
+    # One room, one mirror, six people. The setting is fixed rather than varied
+    # because it is what makes the format legible: a bedroom mirror is where
+    # this kind of video is filmed, the reflection gives the shot a second
+    # subject for free, and holding the location constant means the only thing
+    # that changes between clips is the performer — which is exactly the
+    # variable a channel wants a viewer to recognise.
     Performer("nia", "Black woman, natural coil afro, warm brown skin, gold hoop "
-                     "earrings, oversized cream knit and wide denim, sunlit loft "
-                     "with tall windows", "loose, grounded, shoulder-led"),
-    Performer("mei", "East Asian woman, straight black bob, oversized grey blazer "
-                     "over a white tee, black trousers, concrete stairwell with a "
-                     "single hard light", "sharp, precise, stop-and-go"),
+                     "earrings, oversized cream knit and wide denim, dancing in "
+                     "front of a full-length bedroom mirror, warm lamp light, "
+                     "unmade bed and plants behind her, phone propped on a shelf",
+              "loose, grounded, shoulder-led"),
+    Performer("mei", "East Asian woman, straight black bob, oversized grey tee and "
+                     "black shorts over tights, dancing in front of a full-length "
+                     "bedroom mirror, cool blue evening light through blinds, "
+                     "posters and fairy lights behind her",
+              "sharp, precise, stop-and-go"),
     Performer("sofia", "Latina woman, dark wavy hair to the shoulder, olive skin, "
-                       "rust corduroy jacket and straight jeans, rooftop at golden "
-                       "hour", "fluid, hip-led, continuous"),
-    Performer("priya", "South Asian woman, long dark hair, deep brown skin, olive "
-                       "utility jacket and cargo trousers, neon-lit underpass at "
-                       "night", "quick footwork, low centre"),
+                       "cropped hoodie and joggers, dancing in front of a "
+                       "full-length bedroom mirror, golden afternoon sun across "
+                       "the wall, wardrobe door ajar behind her",
+              "fluid, hip-led, continuous"),
+    Performer("priya", "South Asian woman, long dark hair, deep brown skin, "
+                       "oversized flannel over a vest and cargo trousers, dancing "
+                       "in front of a full-length bedroom mirror, single warm "
+                       "bedside lamp, string lights and a desk behind her",
+              "quick footwork, low centre"),
     Performer("hanna", "White woman, shoulder-length auburn hair, freckles, black "
-                       "turtleneck and pleated skirt over tights, empty rehearsal "
-                       "room with mirrors", "long lines, arms-led, unhurried"),
+                       "long-sleeve top and wide trousers, dancing in front of a "
+                       "full-length bedroom mirror, grey daylight from a window, "
+                       "bare walls and a laundry chair behind her",
+              "long lines, arms-led, unhurried"),
     Performer("amara", "Mixed-race woman, tight curls pulled back, brown skin, "
-                       "faded band tee and leather jacket, rain-wet street under "
-                       "shopfront light", "punchy, bouncing, weight forward"),
+                       "faded band tee and track pants, dancing in front of a "
+                       "full-length bedroom mirror, pink and amber LED strip "
+                       "light, records and a speaker behind her",
+              "punchy, bouncing, weight forward"),
 )
 
 CAST_BY_KEY = {p.key: p for p in CAST}
