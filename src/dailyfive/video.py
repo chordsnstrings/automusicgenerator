@@ -9,10 +9,10 @@ the format's entire job is to be legible for four minutes on a television, and
 a generated clip that loops for four minutes is worse than a still that does
 not pretend to be moving.
 
-The HOOK SHORT is 9:16, about twenty seconds, and it is the expensive one: a
-handful of Seedance clips of one dancer, cut on the beat, with the hook lyric
-burned over the top. That module is separate; this one takes whatever clips
-arrive and assembles them.
+The HOOK SHORT is 9:16, about twenty seconds, and it is the expensive one:
+generated clips of one dancer, cut on the beat, carrying no text at all. The
+words live in the lyric video; on a short they compete with the thing being
+watched. This module takes whatever clips arrive and assembles them.
 
 Text is rendered through libass rather than drawtext. drawtext takes one string
 per filter and would need sixty-four chained filters for a five-minute song,
@@ -265,38 +265,28 @@ def hook_window(lines: list[Line], *, want_s: float = 22.0) -> tuple[float, floa
 SHORT_W, SHORT_H = 1080, 1920
 
 
-def hook_short(clips: list[Path], audio: Path, lrc: Path, dest: Path, *,
-               start_s: float, duration_s: float = 22.0,
+def hook_short(clips: list[Path], audio: Path, dest: Path, *,
+               start_s: float, duration_s: float = 20.0,
                bpm: int | None = None) -> Path:
-    """Assemble generated clips into a 9:16 short with the hook lyric over it.
+    """Assemble generated clips into a 9:16 short over the song's hook.
 
-    The clips carry no sound — Seedance does not generate any — so the master's
-    own hook window is the audio bed, which is also why the cut can be exact:
-    the beat grid comes from the brief's BPM rather than from analysing a
-    render, so a cut lands on the beat by construction instead of by luck.
+    No text. The words are the audio's job here — a caption on a dancing clip
+    competes with the thing a viewer is actually watching, and a burnt-in line
+    that drifts by half a beat is worse than no line at all. The lyric video is
+    where the words belong, at a size and a pace someone reads.
+
+    The clips carry no sound — neither generator produces any — so the master's
+    own hook window is the audio bed. That is also why the cut can be exact: the
+    beat grid comes from the brief's BPM rather than from analysing a render, so
+    a cut lands on the beat by construction instead of by luck.
     """
     if not clips:
         raise RuntimeError("no clips to assemble")
     dest.parent.mkdir(parents=True, exist_ok=True)
 
-    lines = [ln for ln in parse_lrc(lrc.read_text(encoding="utf-8"))
-             if start_s <= ln.start < start_s + duration_s]
-    for ln in lines:
-        ln.start -= start_s
-        ln.end = min(ln.end - start_s, duration_s)
-
-    ass = dest.with_suffix(".ass")
-    # Bigger and heavier than the landscape style: a phone is held at arm's
-    # length and the caption competes with a moving body behind it. Outline, not
-    # a box — a box reads as a subtitle track, an outline reads as a caption,
-    # and captions are what this format uses.
-    ass.write_text(build_ass(lines, width=SHORT_W, height=SHORT_H,
-                             size=int(SHORT_H * 0.052),
-                             margin_v=int(SHORT_H * 0.22)), encoding="utf-8")
-
     # Each clip is normalised to the output frame before anything is joined, so
-    # concat never has to reconcile two geometries and no scale survives past
-    # the join.
+    # concat never has to reconcile two geometries — the sources genuinely differ
+    # (1088x1920 from one provider, 768x1364 from another).
     parts, inputs = [], []
     for i, c in enumerate(clips):
         inputs += ["-i", str(c)]
@@ -304,24 +294,18 @@ def hook_short(clips: list[Path], audio: Path, lrc: Path, dest: Path, *,
             f"[{i}:v]scale={SHORT_W}:{SHORT_H}:force_original_aspect_ratio=increase,"
             f"crop={SHORT_W}:{SHORT_H},setsar=1,fps=30[c{i}]")
     joined = "".join(f"[c{i}]" for i in range(len(clips)))
-    chain = (";".join(parts) + ";" +
-             f"{joined}concat=n={len(clips)}:v=1:a=0[cut];"
-             # Subtitles last, at native resolution, nothing after it.
-             f"[cut]subtitles='{ass.as_posix()}'[v]")
+    chain = ";".join(parts) + ";" + f"{joined}concat=n={len(clips)}:v=1:a=0[v]"
 
     _ffmpeg([*inputs, "-ss", f"{start_s:.3f}", "-i", str(audio),
              "-filter_complex", chain,
              "-map", "[v]", "-map", f"{len(clips)}:a",
              "-c:v", "libx264", "-preset", "slow", "-crf", "18",
-             # A high maxrate matters more than the CRF here: thin white strokes
-             # on a moving background are the first thing a platform's re-encode
-             # destroys, and giving it a clean high-bitrate source is the only
-             # control this end has over that.
+             # A high ceiling still matters without text: the platform re-encode
+             # is harsh, and 768P footage upscaled to 1080 has little to spare.
              "-maxrate", "12M", "-bufsize", "24M",
              "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
              "-t", f"{duration_s:.2f}", "-movflags", "+faststart", str(dest)],
             f"hook short for {dest.name}")
-    ass.unlink(missing_ok=True)
     return dest
 
 

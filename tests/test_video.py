@@ -110,3 +110,25 @@ def test_no_performer_description_carries_its_own_age_term():
         low = p.look.lower()
         for word in ("young", "teen", "girl", "age", "year"):
             assert word not in low, f"{p.key}: {word}"
+
+
+def test_the_short_carries_no_text_at_all():
+    """The words live in the lyric video. On a short a caption competes with the
+    thing being watched, and a burnt-in line that drifts by half a beat is worse
+    than no line — so the short's filter chain must contain no subtitle stage."""
+    import inspect
+
+    from dailyfive import video
+    src = inspect.getsource(video.hook_short)
+    assert "subtitles" not in src
+    assert "build_ass" not in src
+    # And it no longer needs the lyric file to do its job.
+    assert "lrc" not in inspect.signature(video.hook_short).parameters
+
+
+def test_the_lyric_video_still_burns_its_words():
+    """The same change must not have reached the format whose entire job is text."""
+    import inspect
+
+    from dailyfive import video
+    assert "subtitles" in inspect.getsource(video.lyric_video)
