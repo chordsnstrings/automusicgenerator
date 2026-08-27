@@ -22,6 +22,17 @@ bad()  { say "$1" "FAIL — $2"; FAILED=$((FAILED + 1)); }
 
 code() { curl -sS -o /dev/null -w '%{http_code}' --max-time "${3:-45}" ${2:+-H "$2"} "$BASE$1"; }
 
+# ── which build answered ─────────────────────────────────────────────────────
+# First, because every check below is a statement about a version, and this app
+# deploys from a generic git source — App Platform does not redeploy one of
+# those on a push, so "the tests pass and I pushed" is not evidence that any of
+# this is running.
+build=$(curl -sS --max-time 20 "$BASE/healthz")
+case "$build" in
+  *'"version"'*) ok "build" "$build" ;;
+  *) bad "build" "no version in /healthz: ${build:-no answer}" ;;
+esac
+
 # ── the pages ────────────────────────────────────────────────────────────────
 # /genres is the heaviest page here — it calls scores(), status(), trend() and
 # slate(), and indexes into Run.notes JSON written by sixty runs of possibly

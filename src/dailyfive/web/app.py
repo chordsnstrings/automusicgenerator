@@ -26,6 +26,7 @@ from fastapi.responses import (HTMLResponse, JSONResponse, RedirectResponse,
                                StreamingResponse)
 from sqlalchemy import LargeBinary, func, select
 
+from .. import __version__
 from ..config import settings
 from ..db import init_db, session_scope
 from ..models import Clip, Job, Outcome, Run, StoredFile, utcnow
@@ -63,6 +64,29 @@ def _check_secret(secret: str) -> None:
         raise HTTPException(status_code=404, detail="not found")
 
 
+def _built() -> str | None:
+    """When the image this process runs from was assembled, near enough.
+
+    The package directory's mtime, computed once. In a container that is the
+    COPY of a fresh clone, so it moves with every build and with nothing else.
+    On a developer's machine it is whenever the file was last edited, which is
+    the same question answered as well as it can be there.
+    """
+    from datetime import datetime, timezone
+    from pathlib import Path
+    try:
+        ts = Path(__file__).resolve().parents[1].stat().st_mtime
+        return datetime.fromtimestamp(ts, timezone.utc).isoformat(timespec="seconds")
+    except OSError:
+        return None
+
+
+# Computed once at import: a stat per liveness probe is a syscall a platform
+# health check makes every few seconds forever, to answer a question whose
+# answer cannot change while the process is running.
+_BUILT = _built()
+
+
 @app.api_route("/healthz", methods=["GET", "HEAD"])
 def liveness() -> dict:
     """Is the process alive? Nothing more.
@@ -73,8 +97,16 @@ def liveness() -> dict:
     away the one process that could have told you what the database said. This
     one only proves the server is serving; /health stays the readiness and
     status endpoint for humans and uptime monitors.
+
+    It also names the build, which is not decoration. This app is deployed from
+    a generic git source, and App Platform does not redeploy one of those on a
+    push — so "is my change live?" is a real question with a non-obvious answer,
+    and it was being answered by grepping the served HTML for a CSS class that
+    only exists in the new version. ``built`` is the package directory's mtime,
+    which is the clone the image was built from; it needs no build argument and
+    changes on every deploy, which is exactly the property wanted.
     """
-    return {"ok": True}
+    return {"ok": True, "version": __version__, "built": _BUILT}
 
 
 @app.api_route("/health", methods=["GET", "HEAD"])
