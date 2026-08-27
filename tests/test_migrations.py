@@ -186,3 +186,24 @@ def test_migrating_does_not_switch_the_studios_own_logging_off():
     assert not before.disabled
     init_db()
     assert not before.disabled, "a migration turned the application's loggers off"
+
+
+def test_the_migrated_schema_matches_the_models():
+    """A hand-written migration and a hand-written model drift silently.
+
+    The suite migrates a real SQLite file per test, so any column the models
+    expect and the migration forgot shows up as an OperationalError somewhere
+    unrelated. This asks the question directly, and on every table.
+    """
+    from sqlalchemy import inspect
+
+    from dailyfive.db import engine, init_db
+    from dailyfive.models import Base
+
+    init_db()
+    found = inspect(engine())
+    for table in Base.metadata.sorted_tables:
+        assert found.has_table(table.name), f"{table.name} was never created"
+        columns = {c["name"] for c in found.get_columns(table.name)}
+        missing = {c.name for c in table.columns} - columns
+        assert not missing, f"{table.name} is missing {sorted(missing)}"

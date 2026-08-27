@@ -31,8 +31,7 @@ def upgrade() -> None:
         sa.Column("clip_id", sa.Integer(),
                   sa.ForeignKey("clips.id", ondelete="CASCADE"), nullable=False),
         sa.Column("platform", sa.String(length=16), nullable=False),
-        sa.Column("status", sa.String(length=16), nullable=False,
-                  server_default="pending"),
+        sa.Column("status", sa.String(length=16), nullable=False),
         sa.Column("external_id", sa.String(length=120)),
         sa.Column("url", sa.String(length=400)),
         sa.Column("error", sa.Text()),
@@ -40,13 +39,16 @@ def upgrade() -> None:
         sa.Column("likes", sa.Integer()),
         sa.Column("comments", sa.Integer()),
         sa.Column("shares", sa.Integer()),
-        sa.Column("metrics", sa.JSON(), nullable=False, server_default="{}"),
+        # No server_default, matching every other JSON column in this schema:
+        # the ORM supplies `default=dict` on insert, and a DEFAULT '{}' on a
+        # json column is a literal Postgres has to coerce from unknown — which
+        # it does, right up until someone changes the type to jsonb and finds
+        # out it depends on that.
+        sa.Column("metrics", sa.JSON(), nullable=False),
         sa.Column("metrics_at", sa.DateTime(timezone=True)),
         sa.Column("published_at", sa.DateTime(timezone=True)),
-        sa.Column("created_at", sa.DateTime(timezone=True),
-                  server_default=sa.func.now(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True),
-                  server_default=sa.func.now(), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.UniqueConstraint("clip_id", "platform", name="uq_publication"),
     )
     op.create_index("ix_publications_clip_id", "publications", ["clip_id"])
@@ -68,8 +70,7 @@ def upgrade() -> None:
         sa.Column("expires_at", sa.DateTime(timezone=True)),
         sa.Column("account_id", sa.String(length=120)),
         sa.Column("scope", sa.Text()),
-        sa.Column("updated_at", sa.DateTime(timezone=True),
-                  server_default=sa.func.now(), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         sa.UniqueConstraint("platform", name="uq_oauth_platform"),
     )
     op.create_index("ix_oauth_tokens_platform", "oauth_tokens", ["platform"])
