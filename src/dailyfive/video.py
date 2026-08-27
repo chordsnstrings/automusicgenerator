@@ -173,7 +173,10 @@ def build_ass(lines: list[Line], *, width: int, height: int,
 def _ffmpeg(args: list[str], what: str) -> None:
     if not shutil.which("ffmpeg"):
         raise RuntimeError("ffmpeg is not on PATH")
-    r = subprocess.run(["ffmpeg", "-y", "-nostats", "-hide_banner", *args],
+    # -nostdin or ffmpeg eats the caller's stdin. A shell loop feeding paths
+    # from a heredoc then runs a fraction of its iterations and reports no
+    # error at all — the first assembly built an eight-cut short from three.
+    r = subprocess.run(["ffmpeg", "-nostdin", "-y", "-nostats", "-hide_banner", *args],
                        capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError(f"{what} failed: {r.stderr.strip()[-600:]}")
