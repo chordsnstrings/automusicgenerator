@@ -1,0 +1,58 @@
+<!doctype html><meta charset="utf-8">
+<!--
+  The fallback treatment. The Video Director writes a per-song replacement; this
+  is what ships when it has not, and what every generated page is checked
+  against — a treatment must define seek(t) and must read window.LINES, because
+  the renderer drives the clock and the page owns nothing about time.
+-->
+<style>
+  html,body{margin:0;width:1920px;height:1080px;overflow:hidden;background:#0a0c0f;
+    font-family:"DejaVu Sans",system-ui,sans-serif;color:#fff;
+    -webkit-font-smoothing:antialiased}
+  #bed{position:absolute;inset:-9%;background-size:cover;background-position:center;
+    filter:blur(38px) brightness(.40) saturate(.78);will-change:transform}
+  #vig{position:absolute;inset:0;
+    background:radial-gradient(ellipse at 50% 42%,transparent 34%,rgba(0,0,0,.72) 100%)}
+  #art{position:absolute;left:50%;top:8.5%;width:306px;height:306px;margin-left:-153px;
+    border-radius:5px;background-size:cover;box-shadow:0 26px 76px rgba(0,0,0,.7)}
+  #sec{position:absolute;left:50%;top:calc(8.5% + 336px);transform:translateX(-50%);
+    font-size:19px;letter-spacing:.34em;text-transform:uppercase;opacity:.34}
+  #line{position:absolute;left:11%;width:78%;bottom:15%;text-align:center;
+    font-size:60px;font-weight:700;line-height:1.26;letter-spacing:-.012em;
+    text-shadow:0 2px 26px rgba(0,0,0,.9),0 0 3px rgba(0,0,0,.95)}
+  .w{display:inline-block;margin:0 .17em;opacity:.20;transform:translateY(15px);
+     transition:opacity .17s ease,transform .17s cubic-bezier(.2,.85,.25,1)}
+  .w.on{opacity:1;transform:none}
+</style>
+<div id="bed"></div><div id="vig"></div><div id="art"></div>
+<div id="sec"></div><div id="line"></div>
+<script>
+let LN = [], bed, art, sec, line;
+function setup(d){
+  LN = d.lines || [];
+  bed = document.getElementById('bed'); art = document.getElementById('art');
+  sec = document.getElementById('sec'); line = document.getElementById('line');
+  if (d.cover){ bed.style.backgroundImage = art.style.backgroundImage = `url(${d.cover})`; }
+  else { art.style.display = 'none'; }
+}
+function seek(t){
+  if (!bed) setup(window.DATA || {lines: window.LINES, cover: window.COVER});
+  // One slow continuous push for the whole song. Restarting it per section
+  // would read as a cut, and this format has no cuts.
+  bed.style.transform = `scale(${(1.05 + t * 0.0018).toFixed(4)})`;
+  const cur = LN.filter(l => t >= l.start && t < l.end).pop();
+  if (!cur){ line.innerHTML = ''; line.dataset.k = ''; return; }
+  sec.textContent = cur.section || '';
+  if (line.dataset.k !== String(cur.start)){
+    line.dataset.k = String(cur.start);
+    line.innerHTML = cur.text.split(/\s+/)
+      .map(w => `<span class="w">${w.replace(/[<>&]/g, '')}</span>`).join(' ');
+  }
+  // Words land across the first 55% of the line's life, so the last word is on
+  // screen well before the line changes and nothing is read at a flash.
+  const span = Math.max(.35, (cur.end - cur.start) * 0.55);
+  const ws = line.querySelectorAll('.w');
+  ws.forEach((w, i) => w.classList.toggle('on',
+    t >= cur.start + span * i / Math.max(1, ws.length)));
+}
+</script>

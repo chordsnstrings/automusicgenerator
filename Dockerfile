@@ -23,7 +23,12 @@ COPY src ./src
 COPY migrations ./migrations
 
 RUN pip install --upgrade pip wheel \
- && pip install -e ".[postgres]"
+ && pip install -e ".[postgres,video]"
+
+# Chromium for the lyric video. --with-deps pulls the shared libraries a
+# headless browser needs that a slim image does not carry; without them it
+# starts and dies with a linker error rather than a useful message.
+RUN playwright install --with-deps chromium
 
 # Transient audio only — the delivered bytes live in Postgres.
 ENV WORK_DIR=/tmp/dailyfive

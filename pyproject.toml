@@ -18,6 +18,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The kinetic-typography lyric video drives a real browser, because a
+# browser is the only thing here that lays out text properly. Optional
+# because video.py renders a lesser lyric video without it and a run that
+# cannot draw kinetic type should still ship songs.
+video = ["playwright>=1.40"]
 postgres = ["psycopg[binary]>=3.1"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
 
