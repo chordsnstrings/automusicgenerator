@@ -12,6 +12,7 @@ import hashlib
 import logging
 import mimetypes
 import shutil
+import time
 from pathlib import Path
 
 import boto3
@@ -184,34 +185,123 @@ class DatabaseStore:
                          clip_id=clip_id, run_id=run_id)
 
     def _put(self, data: bytes, key: str, content_type: str, *,
-             clip_id: int | None, run_id: int | None) -> str:
+             clip_id: int | None, run_id: int | None,
+             attempts: int = 3, sleep=time.sleep) -> str:
+        """Write one file, and survive the cluster hanging up mid-statement.
+
+        The retry is here because it happened: on 2026-08-27 a run shipped all
+        five songs and then died on this INSERT with
+
+            psycopg.OperationalError: consuming input failed:
+            SSL error: unexpected eof while reading
+
+        which is the managed cluster — one vCPU, one gigabyte — dropping the
+        connection while a fifty-megabyte master streamed into it. Nothing was
+        wrong with the data or the schema, and the same insert succeeds on the
+        next connection.
+
+        pool_pre_ping cannot help with this. It proves a connection is alive
+        BEFORE a statement, and this one dies DURING one; the checkout was
+        genuinely healthy. The only thing that recovers it is issuing the
+        statement again on a new connection, which is safe here because the
+        write is an upsert keyed on `key` — a retry after a partial write
+        overwrites the same row rather than adding one.
+
+        Disposing the pool between attempts matters: after an SSL-level failure
+        the other pooled connections to the same backend are often dead too, and
+        retrying onto one of them just fails again faster.
+        """
         from datetime import timedelta
 
-        from .db import session_scope
+        from sqlalchemy.exc import DBAPIError, OperationalError
+
+        from .db import engine, session_scope
         from .models import StoredFile, utcnow
 
         digest = hashlib.sha256(data).hexdigest()
         expires = utcnow() + timedelta(days=self.retention_days)
         kind = _kind_for(key, content_type)
 
-        with session_scope() as s:
-            row = s.query(StoredFile).filter(StoredFile.key == key).one_or_none()
-            if row is None:
-                row = StoredFile(key=key)
-                s.add(row)
-            row.data = data
-            row.content_type = content_type
-            row.size_bytes = len(data)
-            row.sha256 = digest
-            row.kind = kind
-            row.expires_at = expires
-            if clip_id is not None:
-                row.clip_id = clip_id
-            if run_id is not None:
-                row.run_id = run_id
+        # Already here, byte for byte: refresh the window and stop. This is what
+        # makes resuming a half-finished delivery cheap. A run that died partway
+        # through shipping has to be re-run to finish, and without this the
+        # re-run rewrites every master it already stored — two hundred megabytes
+        # of binary column through a one-gigabyte cluster, which is the exact
+        # load that dropped the connection the first time. The repair would
+        # reliably reproduce the fault it exists to repair.
+        if self._unchanged(key, digest, len(data)):
+            self._touch(key, expires)
+            log.info("%s is already stored unchanged — kept, expiry refreshed", key)
+            return key
+
+        for attempt in range(1, attempts + 1):
+            try:
+                with session_scope() as s:
+                    row = s.query(StoredFile).filter(
+                        StoredFile.key == key).one_or_none()
+                    if row is None:
+                        row = StoredFile(key=key)
+                        s.add(row)
+                    row.data = data
+                    row.content_type = content_type
+                    row.size_bytes = len(data)
+                    row.sha256 = digest
+                    row.kind = kind
+                    row.expires_at = expires
+                    if clip_id is not None:
+                        row.clip_id = clip_id
+                    if run_id is not None:
+                        row.run_id = run_id
+                break
+            except (OperationalError, DBAPIError) as exc:
+                if attempt == attempts or not _connection_lost(exc):
+                    raise
+                log.warning("storing %s: connection lost (attempt %d/%d) — %s",
+                            key, attempt, attempts, str(exc)[:160])
+                try:
+                    engine().dispose()
+                except Exception:            # nothing to do but try anyway
+                    pass
+                sleep(2.0 * attempt)
+
         log.info("stored %s in database (%.1f MB, expires %s)",
                  key, len(data) / 1e6, expires.date())
         return key
+
+    def _unchanged(self, key: str, digest: str, size: int) -> bool:
+        """Whether the stored copy is this exact file.
+
+        Compares the hash AND the length. The hash alone would be enough in any
+        realistic sense, but the two columns are written together and a row
+        where they disagree is a row that was written by something other than
+        this method — which is a reason to rewrite it, not to trust it.
+
+        Selected by column, never as an ORM row: loading StoredFile here would
+        pull the whole blob back over the wire to decide whether to send it
+        again.
+        """
+        from sqlalchemy import select
+
+        from .db import session_scope
+        from .models import StoredFile
+        try:
+            with session_scope() as s:
+                got = s.execute(select(StoredFile.sha256, StoredFile.size_bytes)
+                                .where(StoredFile.key == key)).first()
+        except Exception as exc:
+            log.debug("could not check %s before writing: %s", key, exc)
+            return False
+        return bool(got) and got[0] == digest and got[1] == size
+
+    def _touch(self, key: str, expires) -> None:
+        """Push the retention window out without rewriting the bytes."""
+        from sqlalchemy import update
+
+        from .db import session_scope
+        from .models import StoredFile
+        with session_scope() as s:
+            s.execute(update(StoredFile).where(StoredFile.key == key)
+                      .values(expires_at=expires))
 
     # ── reads ────────────────────────────────────────────────────────────────
     def signed_url(self, key: str, *, expires: int = 0) -> str:
@@ -357,6 +447,23 @@ def remeta_stored_files(dry_run: bool = False) -> dict:
                  "would drop a cover that was never made" if dry_run
                  else "no longer name a cover that was never made")
     return {"checked": checked, "fixed": fixed}
+
+
+# What a mid-statement disconnect looks like across the drivers this runs on.
+# Matched on text because psycopg raises OperationalError for both a dropped
+# connection and a dozen unrelated conditions, and retrying a genuine
+# constraint violation three times is three identical failures and a slower
+# error message.
+_LOST = ("ssl error", "unexpected eof", "server closed the connection",
+         "connection already closed", "consuming input failed",
+         "terminating connection", "connection reset")
+
+
+def _connection_lost(exc: Exception) -> bool:
+    if getattr(exc, "connection_invalidated", False):
+        return True
+    text = str(exc).lower()
+    return any(marker in text for marker in _LOST)
 
 
 def _kind_for(key: str, content_type: str) -> str:

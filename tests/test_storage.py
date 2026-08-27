@@ -216,3 +216,134 @@ def test_remeta_leaves_a_manifest_it_cannot_parse(store, caplog):
     with session_scope() as s:
         assert bytes(s.query(StoredFile).filter(
             StoredFile.key == key).one().data) == b"{not json"
+
+
+# ── surviving the cluster hanging up ─────────────────────────────────────────
+def test_a_dropped_connection_mid_write_is_retried(monkeypatch, tmp_path):
+    """On 2026-08-27 a run shipped all five songs and was then marked FAILED
+    because one stored_files INSERT died with
+
+        psycopg.OperationalError: consuming input failed:
+        SSL error: unexpected eof while reading
+
+    which is the managed cluster dropping the connection while a fifty-megabyte
+    master streamed into it. pool_pre_ping cannot catch that — the checkout was
+    genuinely healthy and the connection died mid-statement.
+    """
+    from sqlalchemy.exc import OperationalError
+
+    from dailyfive.storage import DatabaseStore
+
+    from dailyfive import db
+
+    store = DatabaseStore()
+    calls = {"n": 0}
+    real_scope = db.session_scope
+
+    def flaky(*a, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OperationalError(
+                "INSERT INTO stored_files", {},
+                Exception("consuming input failed: SSL error: unexpected eof "
+                          "while reading"))
+        return real_scope(*a, **kw)
+
+    monkeypatch.setattr(db, "session_scope", flaky)
+    store._put(b"payload", "songs/x/master.wav", "audio/wav",
+               clip_id=None, run_id=None, sleep=lambda _s: None)
+    assert calls["n"] == 2, "the write should have been retried once"
+    assert store.exists("songs/x/master.wav")
+
+
+def test_a_real_error_is_not_retried_three_times(monkeypatch):
+    """A constraint violation retried three times is three identical failures
+    and a slower error message."""
+    from sqlalchemy.exc import IntegrityError
+
+    from dailyfive import db
+    from dailyfive.storage import DatabaseStore
+
+    calls = {"n": 0}
+
+    def broken(*a, **kw):
+        calls["n"] += 1
+        raise IntegrityError("INSERT", {}, Exception("duplicate key"))
+
+    # The already-stored probe is best-effort and swallows its own failures, so
+    # it is stood down here to count write attempts and nothing else.
+    monkeypatch.setattr(DatabaseStore, "_unchanged", lambda *a, **k: False)
+    monkeypatch.setattr(db, "session_scope", broken)
+    with pytest.raises(IntegrityError):
+        DatabaseStore()._put(b"x", "songs/y/a.txt", "text/plain",
+                             clip_id=None, run_id=None, sleep=lambda _s: None)
+    assert calls["n"] == 1
+
+
+def test_the_disconnect_markers_recognise_what_production_actually_said():
+    from dailyfive.storage import _connection_lost
+    for text in ("consuming input failed: SSL error: unexpected eof while reading",
+                 "server closed the connection unexpectedly",
+                 "terminating connection due to administrator command",
+                 "connection reset by peer"):
+        assert _connection_lost(Exception(text)), text
+    assert not _connection_lost(Exception("duplicate key value violates unique"))
+
+
+def test_re_storing_the_same_bytes_does_not_rewrite_the_blob():
+    """This is what makes resuming a half-finished delivery cheap.
+
+    A run that dies partway through shipping has to be re-run to finish, and
+    without this the re-run rewrites every master it already stored — two
+    hundred megabytes of binary column through a one-gigabyte cluster, which is
+    the exact load that dropped the connection the first time. The repair would
+    reliably reproduce the fault it exists to repair.
+    """
+    from sqlalchemy import select
+
+    from dailyfive.db import session_scope
+    from dailyfive.models import StoredFile
+    from dailyfive.storage import DatabaseStore
+
+    store = DatabaseStore()
+    store.put_text("the same bytes", "songs/z/lyrics.txt", content_type="text/plain")
+    with session_scope() as s:
+        first = s.execute(select(StoredFile.expires_at)
+                          .where(StoredFile.key == "songs/z/lyrics.txt")).scalar_one()
+
+    writes = {"n": 0}
+    real = DatabaseStore._touch
+
+    def counted(self, key, expires):
+        writes["n"] += 1
+        return real(self, key, expires)
+
+    DatabaseStore._touch = counted
+    try:
+        store.put_text("the same bytes", "songs/z/lyrics.txt",
+                       content_type="text/plain")
+    finally:
+        DatabaseStore._touch = real
+    assert writes["n"] == 1, "an unchanged file should be touched, not rewritten"
+
+    with session_scope() as s:
+        row = s.execute(select(StoredFile)
+                        .where(StoredFile.key == "songs/z/lyrics.txt")).scalar_one()
+    assert row.data == b"the same bytes"
+    assert row.expires_at >= first, "the retention window should have been refreshed"
+
+
+def test_changed_bytes_under_the_same_key_are_written(tmp_path):
+    from sqlalchemy import select
+
+    from dailyfive.db import session_scope
+    from dailyfive.models import StoredFile
+    from dailyfive.storage import DatabaseStore
+
+    store = DatabaseStore()
+    store.put_text("first", "songs/z/meta.json")
+    store.put_text("second", "songs/z/meta.json")
+    with session_scope() as s:
+        row = s.execute(select(StoredFile)
+                        .where(StoredFile.key == "songs/z/meta.json")).scalar_one()
+    assert row.data == b"second"

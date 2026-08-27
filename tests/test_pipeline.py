@@ -203,3 +203,42 @@ def test_every_third_party_import_is_a_declared_dependency():
                     if alias.get(m, m).lower() not in declared:
                         missing.setdefault(m, str(f.relative_to(root)))
     assert not missing, f"undeclared dependencies: {missing}"
+
+
+def test_one_unstorable_artifact_does_not_fail_a_run_that_shipped(run_id):
+    """On 2026-08-27 all five songs were delivered and the run was then marked
+    FAILED because a single stored_files INSERT lost its connection — leaving a
+    red run, a red health check, and five finished songs that were fine.
+
+    The failure is recorded rather than swallowed: it lands in the run's notes,
+    and `keys` simply lacks the entry, which is already how the manifest and the
+    day page express "this file is not there".
+    """
+    from dailyfive.db import session_scope
+    from dailyfive.models import Run
+    from dailyfive.pipeline import _note_unstored
+
+    _note_unstored(run_id, ["01_song/master.wav: connection lost"])
+    _note_unstored(run_id, ["02_song/cover.jpg: connection lost"])
+
+    with session_scope() as s:
+        run = s.get(Run, run_id)
+        files = run.notes["unstored"]["files"]
+    # Appended, not replaced: two clips each losing a file in the same run is
+    # the difference between "one file went missing" and "something is wrong
+    # with the database tonight", and the second note must not erase the first.
+    assert len(files) == 2
+    assert any("master.wav" in f for f in files)
+    assert any("cover.jpg" in f for f in files)
+
+
+def test_the_ship_loop_keeps_going_after_a_store_failure():
+    """The try/except is the point — without it the first failed upload aborts
+    delivery for every clip after it, too."""
+    import inspect
+
+    from dailyfive import pipeline
+    src = inspect.getsource(pipeline._phase_ship)
+    upload_block = src[src.index("keys: dict[str, str] = {}"):]
+    assert "except Exception" in upload_block
+    assert "_note_unstored" in upload_block

@@ -550,12 +550,30 @@ def _phase_ship(run_id: int, cfg, *, skip_art: bool = False) -> RunPhase:
                           slot_index, qc, cover=cover)
         (folder / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
+        # One artifact failing to store must not fail a run that has already
+        # shipped. On 2026-08-27 all five songs were delivered and the run was
+        # then marked FAILED because a single stored_files INSERT lost its
+        # connection — leaving a red run, a red health check, and five finished
+        # songs that were fine. The store retries a dropped connection itself
+        # now; this is what happens when the retries are also exhausted.
+        #
+        # Recorded per file rather than swallowed: `keys` is what the manifest
+        # and the day page read, so a missing entry is already how "this file is
+        # not there" is expressed, and the failure lands in the run's notes
+        # where it can be looked up.
         keys: dict[str, str] = {}
+        unstored: list[str] = []
         for f in folder.iterdir():
             if f.name == "source.wav" or not f.is_file():
                 continue
-            keys[f.name] = spaces.upload(f, spaces.key_for(date_key, slug, f.name),
-                                         clip_id=clip_id, run_id=run_id)
+            try:
+                keys[f.name] = spaces.upload(f, spaces.key_for(date_key, slug, f.name),
+                                             clip_id=clip_id, run_id=run_id)
+            except Exception as exc:
+                unstored.append(f"{slug}/{f.name}: {str(exc)[:160]}")
+                log.error("could not store %s for clip %d: %s", f.name, clip_id, exc)
+        if unstored:
+            _note_unstored(run_id, unstored)
 
         with session_scope() as s:
             s.get(Clip, clip_id).spaces_key = spaces.key_for(date_key, slug)
@@ -607,6 +625,22 @@ def _phase_ship(run_id: int, cfg, *, skip_art: bool = False) -> RunPhase:
     log.info("ship: %d songs delivered to %s", len(manifest),
              spaces.key_for(date_key, ""))
     return _advance(run_id, RunPhase.SHIPPED)
+
+
+def _note_unstored(run_id: int, failures: list[str]) -> None:
+    """Record artifacts that could not be stored, and keep the run alive.
+
+    Appended rather than replaced, because several clips can each lose a file in
+    the same run and the second one must not erase the first — which is the
+    difference between "one file went missing" and "something is wrong with the
+    database tonight".
+    """
+    with session_scope() as s:
+        run = s.get(Run, run_id)
+        notes = dict(run.notes or {})
+        had = list((notes.get("unstored") or {}).get("files") or [])
+        notes["unstored"] = {"files": had + failures}
+        run.notes = notes
 
 
 def _write_rejects(run_id: int, spaces: Spaces, date_key: str) -> None:
