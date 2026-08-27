@@ -28,7 +28,16 @@ from dailyfive.models import Base              # noqa: E402
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers defaults to True, and that default is a live
+    # production bug here rather than a style point. Both long-running
+    # processes configure logging in main() and then call `alembic upgrade
+    # head` at container start, so every `dailyfive.*` logger already exists by
+    # the time this line runs — and fileConfig would switch all of them off for
+    # the life of the process. The studio would then run a whole day with its
+    # own warnings going nowhere: the A&R's duplicate-brief warning, the
+    # Director's genre-label warning, every retry and every fallback, silent.
+    # Nothing fails, which is what makes it expensive to find.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 config.set_main_option("sqlalchemy.url", settings().database_url.replace("%", "%%"))
 target_metadata = Base.metadata

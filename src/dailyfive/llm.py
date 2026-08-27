@@ -37,8 +37,9 @@ from .errors import ConfigError, ProviderError
 
 log = logging.getLogger(__name__)
 
-# The seven roles that need a brain. Anything else is plain code, on purpose.
-ROLES = ("scout", "director", "anr", "lyricist", "clearance", "producer", "retro")
+# The eight roles that need a brain. Anything else is plain code, on purpose.
+ROLES = ("scout", "director", "anr", "lyricist", "clearance", "producer", "retro",
+         "videodirector")
 
 # Sensible per-role defaults when nothing is configured. Lyricist leans MiniMax
 # because that was the original intent and it is cheap for high-volume creative
@@ -51,6 +52,7 @@ ROLE_HINTS = {
     "clearance": "careful rule-following, low temperature",
     "producer": "comparative judgement across many candidates",
     "retro": "weekly, low volume, reads aggregates",
+    "videodirector": "short physical shot lists — a small model is enough",
 }
 
 

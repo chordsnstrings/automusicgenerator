@@ -61,7 +61,7 @@ against. The third is an open decision — see §8.
 
 ## 3. The roster — 12 agents
 
-Seven added to the five originally proposed. Each is justified by the specific failure it
+Eight added to the five originally proposed. Each is justified by the specific failure it
 prevents.
 
 | # | Agent | Status | Prevents | LLM |
@@ -78,8 +78,9 @@ prevents.
 | 10 | **Producer** | kept | Shipping the first five instead of the best five | any |
 | 11 | **Packager** | **added** | A bucket of untitled WAVs you cannot use | light |
 | 12 | **Archivist** | **added** | Day 30 being exactly as good as day 1 | weekly retro only |
+| 13 | **Video Director** | **added** | Two clips of "dancing" cutting together into a loop a viewer spots at 0:03 | any brain, small is enough |
 
-**Five of twelve have no model in them at all.** That is what makes the system cheap
+**Five of thirteen have no model in them at all.** That is what makes the system cheap
 enough to run 365 days a year and reliable enough to run unattended. Put a language
 model where a measurement belongs and you get a system that hallucinates that the
 audio is fine.
@@ -355,9 +356,9 @@ also receives your daily ratings, so there is only one public surface to secure.
 | Provider | Used for | Called by | Notes |
 |---|---|---|---|
 | sunoapi.org | music generation, WAV conversion, aligned lyrics | Conductor, Packager | the only irreplaceable dependency |
-| MiniMax | any reasoning role; optional second music supplier | 7 roles | verified live on the full roster; music billing needs PAYG, not just a plan key |
+| MiniMax | any reasoning role; optional second music supplier | 8 roles | verified live on the full roster; music billing needs PAYG, not just a plan key |
 | BytePlus ModelArk | cover art (Seedream); optional video loops (Seedance) | Packager | no text models exposed — art only. **Not configured**: no key, so no covers |
-| Any brain | Scout, Director, A&R, Lyricist, Clearance, Producer, Retro | 7 roles | set by `LLM_DEFAULT`; per-role overrides |
+| Any brain | Scout, Director, A&R, Lyricist, Clearance, Producer, Retro, Video Director | 8 roles | set by `LLM_DEFAULT`; per-role overrides |
 | ffmpeg | QC measurement, mastering, MP3 encode | QC, Packager | local, free, deterministic |
 | DO Spaces | every artefact, forever | Conductor, Packager | S3-compatible; set a lifecycle rule |
 
@@ -529,7 +530,7 @@ src/dailyfive/
 ├── codex.py         the Style Codex and persona cast, versioned
 ├── pipeline.py      the five phases, with resume
 ├── cli.py           operator commands
-├── agents/          the seven roles that need a model
+├── agents/          the eight roles that need a model
 ├── providers/       suno, minimax, modelark
 ├── signals/         the seven free feeds
 └── web/             callback receiver, rating endpoint, the delivered day page

@@ -168,3 +168,21 @@ def test_the_lock_is_actually_wired_into_the_upgrade():
     online = source.split("def run_migrations_online")[1]
     assert "_migration_lock(connection)" in online
     assert online.index("_migration_lock") < online.index("context.run_migrations")
+
+
+def test_migrating_does_not_switch_the_studios_own_logging_off():
+    """alembic's fileConfig disables every existing logger unless told not to.
+
+    Both long-running processes configure logging and then migrate at startup,
+    so the default would silence every `dailyfive.*` warning for the life of the
+    process — the A&R's duplicate-brief warning, the Director's genre warning,
+    every retry and fallback — while nothing at all appeared to fail.
+    """
+    import logging
+
+    from dailyfive.db import init_db
+
+    before = logging.getLogger("dailyfive.testcanary")
+    assert not before.disabled
+    init_db()
+    assert not before.disabled, "a migration turned the application's loggers off"

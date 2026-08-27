@@ -1,4 +1,4 @@
-"""The seven roles that need a model.
+"""The eight roles that need a model.
 
 The other four — Conductor, QC Engineer, and the daily halves of Packager and
 Archivist — are plain code, on purpose. Putting a language model where a
