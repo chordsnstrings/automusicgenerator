@@ -4,6 +4,16 @@ Two targets exist and they are not interchangeable. `deploy.sh` installs onto a
 plain droplet over SSH. Production runs on **DigitalOcean App Platform**, which
 `deploy.sh` knows nothing about.
 
+## One command
+
+```bash
+DIGITALOCEAN_ACCESS_TOKEN=dop_v1_... deploy/app-deploy.sh
+```
+
+It creates the deployment, waits for it, reads the version back out of the
+running process to prove the new build is the one answering, and then runs
+`verify-production.sh`. The rest of this page is what it does and why.
+
 ## App Platform: a push is not a deploy
 
 The app's spec (`app-platform.json`) uses a **generic git source** —
