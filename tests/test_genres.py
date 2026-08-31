@@ -173,12 +173,34 @@ def test_shipped_labels_are_never_renamed():
     assert FROZEN_SPECIFICS <= set(SPECIFICS), "a specific was renamed or removed"
 
 
-def test_the_vocabulary_fits_the_sample_budget():
+def test_the_family_level_fits_the_sample_budget():
     """Five rateable songs a day over a 60-day record is 300 rated briefs, so
-    300 / GENRE_MIN_RATED labels is the ceiling at perfect rating coverage."""
+    300 / GENRE_MIN_RATED labels is the ceiling at perfect rating coverage.
+
+    The assertion is on FAMILIES alone, and the specific level is deliberately
+    not held to it. This test once asserted both, which read as though the two
+    were reconciled when they were only equal — there were exactly 37 specifics
+    and the ceiling was exactly 37. At the real rating coverage (a third of
+    shipped songs) about a dozen specifics could ever rank, so the specific
+    level was already above its budget before a single fusion was added.
+
+    The two levels do different jobs. The family is what is learned. The
+    specific is vocabulary the Director writes prompts with, and a label that
+    never ranks still earns its place by being reachable — which is the whole
+    reason "electronic-hip-hop" exists as a term at all.
+    """
     ceiling = 60 * 5 // GENRE_MIN_RATED
     assert len(FAMILIES) * 4 <= ceiling, "too many families to sustain a rated signal"
-    assert len(SPECIFICS) <= ceiling, "the specific level is above the sample ceiling"
+
+
+def test_an_unranked_specific_is_never_reported_as_ranked():
+    """The safeguard that lets the specific level exceed its sample budget: a
+    label below GENRE_MIN_RATED reports no taste at all, so a vocabulary far
+    larger than the ceiling cannot manufacture a track record."""
+    data = genres.scores()
+    for row in data["specifics"].values():
+        if row["rated_n"] < GENRE_MIN_RATED:
+            assert row["taste"] is None
 
 
 def test_the_thresholds_are_stricter_than_the_style_token_floor():
@@ -520,7 +542,7 @@ def test_the_specific_level_reports_its_own_row():
 
 # ── allocation ───────────────────────────────────────────────────────────────
 def test_cold_start_is_round_robin():
-    rows = genres.slate(7)
+    rows = genres.slate(7, rhythm_floor=0)
     assert len(rows) == 7
     assert all(r["specs"] == 1 for r in rows)
     assert len({r["genre_family"] for r in rows}) == 7
@@ -619,7 +641,10 @@ def test_a_slate_row_carries_its_sample_count_always():
 
 def test_an_external_chart_breaks_a_tie_and_never_produces_a_score():
     external = {"current": {"latin": 6, "country": 6}, "catalogue": {"country": 17}}
-    rows = genres.slate(2, external=external)
+    # The rhythm floor is stood down: this is a test of the tie-break, and a
+    # floor that claims a pick before the charts are read would be testing two
+    # mechanisms at once and telling you about neither.
+    rows = genres.slate(2, external=external, rhythm_floor=0)
     picked = [r["genre_family"] for r in rows]
     assert "latin" in picked and "country" in picked
     assert all(r["mean"] is None for r in rows)
@@ -807,3 +832,75 @@ def test_a_liked_family_beats_a_disliked_one_with_fewer_samples():
     # stops deciding; much less and nothing new is ever tried.
     premium = (genres._bonus(8, 300) - genres._bonus(30, 300)) * 9
     assert 0.5 < premium < 2.0, f"{premium:.2f} rating points"
+
+
+# ── the rhythm floor ─────────────────────────────────────────────────────────
+def test_the_day_always_contains_rhythm_led_music():
+    """The one rule in the module that is a taste decision rather than a
+    measurement. The studio ships to vertical video and a day of piano ballads
+    cannot be used there no matter how well it scores — on 2026-08-30 coverage
+    rotation gave three of five released tracks at or below 96 BPM, two of them
+    on piano and fingerpicked guitar, and the allocator was working correctly."""
+    rows = genres.slate(7, rhythm_floor=2, explore_briefs=0)
+    got = sum(r["specs"] for r in rows if r["genre_family"] in genres.RHYTHM_LED)
+    assert got >= 2
+    assert sum(r["specs"] for r in rows) == 7
+
+
+def test_the_floor_survives_a_warm_record_that_favours_folk():
+    """A floor that a good month for folk can talk out of is a preference."""
+    for offset, (family, rating) in enumerate(
+            (("folk", 9), ("country", 9), ("rock", 8))):
+        _stock(family, n=12, rating=rating, start=200 + offset * 40)
+    rows = genres.slate(7, rhythm_floor=2, explore_briefs=0)
+    got = sum(r["specs"] for r in rows if r["genre_family"] in genres.RHYTHM_LED)
+    assert got >= 2, [(r["genre_family"], r["specs"], r["stance"]) for r in rows]
+
+
+def test_the_floor_never_takes_more_than_half_the_slate():
+    """A floor that can take the whole day is not a floor, it is the allocator.
+    slate(2) with a floor of 2 would leave nothing for evidence or an external
+    chart to decide."""
+    rows = genres.slate(2, rhythm_floor=2, explore_briefs=0)
+    got = sum(r["specs"] for r in rows if r["genre_family"] in genres.RHYTHM_LED)
+    assert got <= 1
+    assert sum(r["specs"] for r in rows) == 2
+
+    single = genres.slate(1, rhythm_floor=2, explore_briefs=0)
+    assert sum(r["specs"] for r in single) == 1
+
+
+def test_an_exploration_pick_that_lands_on_rhythm_counts_toward_the_floor():
+    """Otherwise the two floors spend the same brief twice and a seven-brief day
+    has four of its slots decided before the allocator sees them."""
+    rows = genres.slate(7, rhythm_floor=2, explore_briefs=2)
+    assert sum(r["specs"] for r in rows) == 7
+    floored = sum(r["specs"] for r in rows if r["stance"] == "floor")
+    assert floored <= 2
+
+
+def test_the_floor_picks_are_labelled_as_a_decision_not_as_evidence():
+    """It biases the record — a family inside RHYTHM_LED accumulates rated
+    briefs faster than one outside it — so the console has to be able to say
+    which picks were taste rather than measurement."""
+    rows = genres.slate(7, rhythm_floor=2, explore_briefs=0)
+    floor_rows = [r for r in rows if r["stance"] == "floor"]
+    assert floor_rows
+    for r in floor_rows:
+        assert r["genre_family"] in genres.RHYTHM_LED
+        assert "rhythm floor" in r["why"]
+
+
+def test_the_fusions_are_reachable_and_belong_to_real_families():
+    """The user-facing point of the whole change: a crossbreed is now a label
+    the Director can copy verbatim, not something it has to invent in prose."""
+    for fusion in ("electronic-hip-hop", "techno-r-and-b", "electro-r-and-b",
+                   "jersey-club", "phonk", "hyperpop", "latin-house",
+                   "melodic-techno", "drum-and-bass"):
+        assert fusion in SPECIFICS, fusion
+        assert SPECIFICS[fusion] in FAMILIES
+        assert fusion in VOCABULARY[SPECIFICS[fusion]]
+
+
+def test_every_rhythm_led_family_is_a_real_family():
+    assert genres.RHYTHM_LED <= set(FAMILIES)

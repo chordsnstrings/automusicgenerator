@@ -762,6 +762,15 @@ def _brief_dict(b: Brief) -> dict:
 def _clip_dict(c: Clip) -> dict:
     return {
         "clip_id": c.id, "audio_id": c.audio_id, "title": c.title,
+        # Which brief this came from, and it is not decoration. Suno returns
+        # TWO clips per generation — the same song, twice — so every candidate
+        # has a twin, and without this field nothing downstream can tell that
+        # two candidates are the same song rather than two songs with the same
+        # title. On 2026-08-30 the Producer shipped both takes of one brief as
+        # slots 1 and 2 and held a fifth distinct song; its own rationale said
+        # "five leading themes with one track each", because it could not see
+        # the pairing either.
+        "brief_id": c.brief_id,
         "slot_type": c.slot_type.value, "duration_s": c.duration_s,
         "style_string": c.style_string, "negative_tags": c.negative_tags,
         "model": c.model, "vocal_gender": c.vocal_gender,

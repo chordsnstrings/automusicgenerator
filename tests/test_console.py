@@ -512,11 +512,28 @@ def test_the_genre_page_ranks_on_your_rating_and_not_the_producers(client):
 
 def test_the_genre_page_shows_a_slate_on_a_day_no_run_has_happened(client):
     """The allocator is deterministic, so the slate a fresh install would be
-    given is a real thing to show — and an all-explore one says so."""
+    given is a real thing to show — and it says what each pick is."""
     from dailyfive.config import settings
+    cfg = settings()
     body = client.get("/genres").text
     assert "The next slate" in body
-    assert f"Every one of these {settings().total_briefs} briefs is exploration" in body
+    explore = cfg.total_briefs - min(cfg.genre_rhythm_floor, cfg.total_briefs // 2)
+    assert f"{explore} of {cfg.total_briefs} briefs are exploration" in body
+
+
+def test_the_genre_page_says_the_rhythm_floor_is_taste_and_not_evidence(client):
+    """The floor overrides the ratings on purpose, so the page that exists to
+    report what the studio knows must not let it read as something learned. It
+    is counted separately from exploration for the same reason: an exploration
+    pick is the allocator admitting it does not know, a rhythm pick is the
+    operator deciding regardless."""
+    from dailyfive.config import settings
+    body = client.get("/genres").text
+    if not settings().genre_rhythm_floor:
+        pytest.skip("no rhythm floor configured")
+    assert "rhythm floor" in body
+    assert "taste decision, not a measurement" in body
+    assert "biases the record" in body
 
 
 def test_the_genre_page_keeps_the_two_chart_scopes_apart(client, run_id):

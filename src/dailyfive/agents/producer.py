@@ -86,7 +86,13 @@ rejected candidate lost, because those reasons are what the studio learns from.
 
 Prefer variety across the shipped set where scores are close. Two excellent songs \
 that sound like each other serve the day worse than one excellent and one very \
-good song that do not."""
+good song that do not.
+
+Candidates come in PAIRS. Every brief was generated twice, and the two takes share \
+a brief_id, a title and a theme. They are the same song. Pick at most one of any \
+pair — the second take of a song you have already chosen is not a second release, \
+it is the same release twice, and it costs the day a different song. Where a pair \
+scores well, take the better take and say in its rejection why the other lost."""
 
 FINAL_SCHEMA = """{
   "picks": [{"clip_id": 0, "slot_type": "SLOT_TYPES", "rank": 1, "why": "<= 200 chars"}],
@@ -205,6 +211,9 @@ def _select(candidates: list[dict], signals: dict, *, full_slots: int,
 
     summary = [{
         "clip_id": c["clip_id"], "title": c.get("title"), "slot_type": c.get("slot_type"),
+        # The pairing, stated rather than left to be inferred from the title.
+        # Two takes of one brief share this; two different songs never do.
+        "brief_id": c.get("brief_id"),
         "theme": c.get("theme"), "scores": {"hook": c["score_hook"], "mix": c["score_mix"],
                                             "trend": c["score_trend"], "total": c["score_total"]},
         "diversity_vector": c.get("diversity_vector"),
@@ -248,10 +257,40 @@ def _honour_slots(model_picks: list[dict], by_type: dict[str, list[dict]], *,
     Take the model's choices where they are valid, then fill any shortfall from
     score order. A model that returns six full picks for five slots gets the
     top five, not an extra release.
+
+    ONE CLIP PER BRIEF, for the same reason the A&R's persona balance is
+    enforced rather than asked for. Suno returns two clips per generation — the
+    same song, twice — and the prompt's "prefer variety where scores are close"
+    is a preference a model can talk itself out of. On 2026-08-30 it did: slots
+    1 and 2 were both takes of "I Won't Carry You to the Floor" at 8.25 and
+    8.07, a fifth distinct song sat held at 6.35, and the written rationale
+    claimed "five leading themes with one track each". Four songs shipped that
+    day, one of them twice.
+
+    The rule relaxes rather than short-ships. If QC leaves fewer distinct briefs
+    than there are slots, a second take of an already-chosen brief beats an
+    empty slot — five releases where one pair is two takes is a worse day than
+    five distinct songs and a better one than four releases.
     """
     wanted = {"full": full_slots, "short": short_slots}
     chosen: dict[str, list[int]] = {"full": [], "short": []}
     valid_ids = {st: {c["clip_id"] for c in group} for st, group in by_type.items()}
+    brief_of = {c["clip_id"]: c.get("brief_id")
+                for group in by_type.values() for c in group}
+    taken_briefs: set = set()
+
+    def claim(st: str, cid: int) -> None:
+        chosen[st].append(cid)
+        bid = brief_of.get(cid)
+        if bid is not None:
+            taken_briefs.add(bid)
+
+    def is_duplicate(cid: int) -> bool:
+        bid = brief_of.get(cid)
+        # A candidate with no brief_id is never treated as a duplicate: an
+        # unknown pairing is not evidence of one, and guessing would drop a
+        # song rather than a repeat.
+        return bid is not None and bid in taken_briefs
 
     for p in model_picks:
         try:
@@ -265,14 +304,29 @@ def _honour_slots(model_picks: list[dict], by_type: dict[str, list[dict]], *,
             continue
         if cid in chosen[st] or len(chosen[st]) >= wanted[st]:
             continue
-        chosen[st].append(cid)
+        if is_duplicate(cid):
+            log.info("producer picked a second take of brief %s (clip %d) — "
+                     "skipped; the slot goes to a different song",
+                     brief_of.get(cid), cid)
+            continue
+        claim(st, cid)
 
+    # Distinct briefs first, in score order. Only if that cannot fill the slots
+    # does a second take of an already-chosen brief become eligible.
     for st, need in wanted.items():
-        for c in by_type.get(st, []):
-            if len(chosen[st]) >= need:
-                break
-            if c["clip_id"] not in chosen[st]:
-                chosen[st].append(c["clip_id"])
+        for allow_repeat in (False, True):
+            for c in by_type.get(st, []):
+                if len(chosen[st]) >= need:
+                    break
+                if c["clip_id"] in chosen[st]:
+                    continue
+                if not allow_repeat and is_duplicate(c["clip_id"]):
+                    continue
+                if allow_repeat and is_duplicate(c["clip_id"]):
+                    log.warning("only %d distinct briefs survived for %d %s slots "
+                                "— shipping a second take of brief %s",
+                                len(taken_briefs), need, st, c.get("brief_id"))
+                claim(st, c["clip_id"])
 
     reasons = {int(p["clip_id"]): str(p.get("why", ""))[:300]
                for p in model_picks if str(p.get("clip_id", "")).isdigit()}

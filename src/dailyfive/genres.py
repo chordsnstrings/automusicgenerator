@@ -80,13 +80,20 @@ FAMILIES: tuple[str, ...] = (
     "alternative", "electronic", "folk", "latin",
 )
 
-# Nine and not thirty-seven at this level, and the arithmetic is the reason.
-# Seven briefs a day ship five songs, so at most five rated briefs a day even
-# at perfect coverage. A 60-day record therefore holds at most 300 rated
-# briefs, which at GENRE_MIN_RATED = 8 is 37 labels at the ceiling — exactly
-# the number of specifics, i.e. the specific level can never all rank at once
-# and is not meant to. Nine families clears the same ceiling four times over
-# and returns a first verdict inside a fortnight.
+# Nine at this level, and the arithmetic is the reason. Seven briefs a day ship
+# five songs, so at most five rated briefs a day even at perfect coverage. A
+# 60-day record therefore holds at most 300 rated briefs, which at
+# GENRE_MIN_RATED = 8 is 37 labels at the ceiling. Nine families clears that
+# four times over and returns a first verdict inside a fortnight.
+#
+# The SPECIFIC level sits above that ceiling and always did — 37 was the exact
+# number of specifics when this was written, which made the two look reconciled
+# when they were only equal. At the real rating coverage (8 of 25 songs, a
+# third) roughly a dozen specifics could ever rank. So the two levels do
+# different jobs and only one of them is a measurement: the family is what is
+# learned, and the specific is vocabulary for the Director to write a prompt
+# with. A specific label costs nothing to add and is never reported as ranked
+# until it clears GENRE_MIN_RATED on its own, which most never will.
 #
 # Deliberately absent, and the absence is the decision rather than an
 # oversight: christian, jazz, blues, reggae, metal, k-pop, j-pop, afrobeats,
@@ -144,6 +151,37 @@ SPECIFICS: dict[str, str] = {
     "latin-pop": "latin",
     "bachata": "latin",
     "cumbia": "latin",
+
+    # ── fusions ──────────────────────────────────────────────────────────────
+    # Added because the studio was writing one genre per song and the days read
+    # acoustic: on 2026-08-30, three of five shipped tracks sat at or below 96
+    # BPM and two were ballads on piano and fingerpicked guitar. A short-form
+    # catalogue is not built out of that.
+    #
+    # Every one of these is rhythm-led and every one is a crossbreed, which is
+    # the point — "electronic hip-hop" and "techno R&B" are not two labels the
+    # Director could reach by picking one from a list, and country-trap was the
+    # only hybrid in a vocabulary of thirty-seven. They also fit the cast rather
+    # than fighting it: Rook is electronic soul, which is the exact seam these
+    # sit on.
+    #
+    # They do NOT dilute the learning record, because the specific level was
+    # never the learnable unit — see the note above SPECIFICS. A label earns its
+    # place here by being useful to write a prompt with; ranking happens at the
+    # family, and every one of these belongs to a family already in the list.
+    "electro-r-and-b": "r-and-b",
+    "techno-r-and-b": "r-and-b",
+
+    "electronic-hip-hop": "hip-hop",
+    "jersey-club": "hip-hop",
+    "phonk": "hip-hop",
+
+    "melodic-techno": "electronic",
+    "drum-and-bass": "electronic",
+
+    "hyperpop": "pop",
+
+    "latin-house": "latin",
 }
 
 # family -> its specifics, in declaration order. This is what goes into the
@@ -340,6 +378,13 @@ GENRE_WARM_FAMILIES = 3   # families at that bar before preference may steer the
 GENRE_WARM_TOTAL = 30     # rated briefs overall before the same
 
 GENRE_MAX_PER_FAMILY = 2
+
+# The families that produce music with a beat at the front of it. Named here
+# rather than inferred, because "upbeat" is not a property of a family — a
+# country record can be fast — and the thing being guaranteed is not tempo, it
+# is that the day contains music built on rhythm rather than on a chord and a
+# voice.
+RHYTHM_LED: frozenset[str] = frozenset({"hip-hop", "r-and-b", "electronic", "latin"})
 # Two of seven, enforced after the fact rather than requested in a prompt, in
 # the register of anr._rebalance_personas: "No persona takes more than half the
 # day. Enforced, not requested."
@@ -922,7 +967,8 @@ def _bonus(n: int, total: int) -> float:
 
 
 def slate(n: int, *, calibration: dict | None = None, external: dict | None = None,
-          explore_briefs: int | None = None, now: datetime | None = None) -> list[dict]:
+          explore_briefs: int | None = None, rhythm_floor: int | None = None,
+          now: datetime | None = None) -> list[dict]:
     """How many of today's n briefs go to each family, and why.
 
     Counts, not an assignment. Which theme gets which genre is the Music
@@ -945,9 +991,13 @@ def slate(n: int, *, calibration: dict | None = None, external: dict | None = No
     """
     if n <= 0:
         return []
-    if explore_briefs is None:
+    if explore_briefs is None or rhythm_floor is None:
         from .config import settings
-        explore_briefs = settings().genre_explore_briefs
+        cfg = settings()
+        if explore_briefs is None:
+            explore_briefs = cfg.genre_explore_briefs
+        if rhythm_floor is None:
+            rhythm_floor = cfg.genre_rhythm_floor
 
     data = scores(now=now)
     st = status(data=data)
@@ -995,6 +1045,43 @@ def slate(n: int, *, calibration: dict | None = None, external: dict | None = No
         take(pick, f"exploration floor: {floor} of {n} briefs go to families the "
                    f"ratings have least to say about, whatever the leader scores",
              "explore")
+
+    # The rhythm floor, and it is the one rule in this module that is a TASTE
+    # DECISION rather than a measurement. Everything else here allocates from
+    # evidence; this overrides evidence on purpose, because the studio ships to
+    # short-form video and a day of piano ballads cannot be soundtracked no
+    # matter how well it scores. On 2026-08-30 coverage rotation produced three
+    # of five shipped tracks at or below 96 BPM, two of them on piano and
+    # fingerpicked guitar, and nothing in the allocator was wrong — coverage was
+    # exactly what it was asked for.
+    #
+    # It is stated as a floor and not a preference so it cannot be talked out of
+    # by a good week for folk, and it is counted AFTER the exploration floor so
+    # an explore pick that already landed in a rhythm-led family counts toward
+    # it rather than being spent twice.
+    #
+    # What it costs is stated plainly: it biases the record. A family inside
+    # RHYTHM_LED accumulates rated briefs faster than one outside it, so the
+    # ranking is over a slate that was never uniform. The console reports these
+    # picks with stance "floor" for that reason.
+    # Never more than half the slate. A floor that can take the whole day is not
+    # a floor, it is the allocator — slate(2) with a floor of 2 leaves nothing
+    # for evidence or for an external chart to decide, which is a silent
+    # takeover on any call with a small n rather than the seven-brief day this
+    # was sized against.
+    rhythm_want = min(rhythm_floor, n // 2 if n > 1 else 0)
+    while sum(picked.get(f, 0) for f in RHYTHM_LED) < rhythm_want:
+        pool = [f for f in under_cap() if f in RHYTHM_LED]
+        if not pool:
+            break
+        if st["regime"] == "warm":
+            pick, _why, _how = _ucb_pick(pool, fams, n_hat, total_hat, leader)
+        else:
+            pick, _why, _how = _coverage_pick(pool, fams, n_hat, named)
+        take(pick, f"rhythm floor: {rhythm_want} of {n} briefs go to a rhythm-led "
+                   f"family, because the catalogue ships to short-form video and "
+                   f"a day of ballads cannot be used there",
+             "floor")
 
     while sum(picked.values()) < n:
         pool = under_cap()

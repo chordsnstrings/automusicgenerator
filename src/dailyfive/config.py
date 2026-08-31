@@ -185,6 +185,9 @@ class Settings:
     # deployment that lowers it is a deployment whose numbers mean something
     # different from everyone else's.
     genre_explore_briefs: int = field(default_factory=lambda: _i("GENRE_EXPLORE_BRIEFS", 2))
+    # How many of the day's briefs must land in a rhythm-led family. A taste
+    # decision, not a learned one — see genres.RHYTHM_LED for what it costs.
+    genre_rhythm_floor: int = field(default_factory=lambda: _i("GENRE_RHYTHM_FLOOR", 2))
     daily_credit_cap: int = field(default_factory=lambda: _i("DAILY_CREDIT_CAP", 800))
     # Polling cadence. Generation takes 60-90s, so a 20s interval notices
     # promptly without hammering the API. Tests drop these to zero.
@@ -255,6 +258,16 @@ class Settings:
                 f"SHORT_SLOTS ({self.short_slots}) exceeds SHORT_BRIEFS ({self.short_briefs})")
         if not 10 <= self.short_duration_s <= 360:
             raise ConfigError("SHORT_DURATION_S must be between 10 and 360 (Suno V5_5 limit)")
+        if not 0 <= self.genre_rhythm_floor <= self.total_briefs:
+            raise ConfigError(
+                f"GENRE_RHYTHM_FLOOR ({self.genre_rhythm_floor}) must be between "
+                f"0 and the day's {self.total_briefs} briefs")
+        if self.genre_explore_briefs + self.genre_rhythm_floor > self.total_briefs:
+            raise ConfigError(
+                f"GENRE_EXPLORE_BRIEFS ({self.genre_explore_briefs}) plus "
+                f"GENRE_RHYTHM_FLOOR ({self.genre_rhythm_floor}) is more than the "
+                f"day's {self.total_briefs} briefs — the two floors would leave "
+                f"the allocator nothing to decide")
         if not 0 <= self.genre_explore_briefs < self.total_briefs:
             raise ConfigError(
                 f"GENRE_EXPLORE_BRIEFS ({self.genre_explore_briefs}) must leave at "

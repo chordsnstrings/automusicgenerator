@@ -65,7 +65,20 @@ a new hat. Write the spec exactly as you would if the genre fields were not \
 there — same BPM, same key, same form, same hook position — and then fill them \
 in. A spec whose style_string is a genre name with decoration around it is a \
 spec nobody can check afterwards, which is the one thing this role exists to \
-prevent."""
+prevent.
+
+The vocabulary contains CROSSBREEDS — electronic-hip-hop, techno-r-and-b, \
+electro-r-and-b, jersey-club, phonk, hyperpop, latin-house, country-trap, \
+melodic-techno, drum-and-bass — and they are ordinary choices, not exotic ones. \
+Reach for them when the theme wants a beat under it. This catalogue is made to \
+be used in vertical video, and that is not built out of piano ballads: the day \
+this instruction was written, three of five released tracks sat at or below 96 \
+BPM with two of them on piano and fingerpicked guitar.
+
+Picking a fusion changes nothing about the rule above. It is still two \
+controlled terms and a style_string that describes an actual record: what plays \
+the pulse, what plays the chords, where the drop or the hook lands. \
+"electronic-hip-hop" is a key, not a description."""
 
 GENRE_SLATE = """Today's genre slate is decided before you and arrives with the \
 themes. It is a set of COUNTS, not an assignment: it says how many of today's \

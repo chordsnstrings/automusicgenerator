@@ -73,7 +73,20 @@ someone. Over-blocking costs a slot every day; under-blocking costs one \
 occasionally.
 
 If you can fix something with a small edit, propose the edit rather than \
-rejecting the whole brief."""
+rejecting the whole brief.
+
+REJECT IS FOR WHAT AN EDIT CANNOT FIX. A rejected brief is a song that does not \
+get made — nothing replaces it, the day ships one fewer, and a slot goes to a \
+second take of another song instead. Rights risk is almost never in that \
+category: a phrase can be changed. If a refrain is too close to an existing \
+song, rewrite the refrain and pass the rest. Reserve reject for a brief whose \
+whole premise is the problem.
+
+A common phrase repeated as a hook is not a rights risk. "One more time", "hold \
+on", "I can't breathe without you" and their like are how choruses are built; \
+they belong to nobody, and repetition is what a chorus IS. A brief was rejected \
+for exactly this — its hook was "one more time" — and it cost the day a \
+song."""
 
 SCHEMA = """{
   "verdict": "pass|rewrite|reject",
@@ -127,6 +140,23 @@ def run(brief: dict, lyrics: str, style_string: str, *, use_model: bool = True) 
     verdict = result.get("verdict")
     if verdict not in ("pass", "rewrite", "reject"):
         verdict = "pass"
+
+    # A model-chosen reject with no hard rule behind it becomes a rewrite. The
+    # prompt already says an edit beats a rejection and that a common phrase
+    # belongs to nobody; on 2026-08-30 it rejected a brief anyway, because its
+    # hook was "one more time", and the day shipped one fewer song for it.
+    #
+    # Downgraded rather than passed. There may well be something here worth
+    # changing — the model thought so — so the fix it proposed is taken if it
+    # proposed one, and if it did not, the rewrite collapses to a pass through
+    # the branch below, which is the same answer the rules pass would have given
+    # on its own. What is not available any more is spending a slot on a
+    # judgement call that no deterministic rule agreed with.
+    if verdict == "reject" and not hard:
+        log.warning("clearance rejected %r on model judgement alone with no rule "
+                    "hit — treating as a rewrite: %s", brief.get("title"),
+                    "; ".join(str(r)[:120] for r in (result.get("reasons") or []))[:300])
+        verdict = "rewrite"
 
     out_lyrics = lyrics
     out_style = style_string

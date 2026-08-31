@@ -1215,6 +1215,7 @@ def _genre_slate_block(latest: tuple[date, dict] | None, cfg,
     ] for r in rows]
 
     explore = sum(int(r.get("specs") or 0) for r in rows if r.get("stance") == "explore")
+    rhythm = sum(int(r.get("specs") or 0) for r in rows if r.get("stance") == "floor")
     total = sum(int(r.get("specs") or 0) for r in rows)
     if total and explore == total:
         floor_line = (f"Every one of these {total} briefs is exploration: "
@@ -1228,6 +1229,21 @@ def _genre_slate_block(latest: tuple[date, dict] | None, cfg,
                       f"from being the only things that talk to each other.")
     else:
         floor_line = ""
+
+    # Reported separately and never folded into the exploration count, because
+    # they are not the same kind of decision. An exploration pick is the
+    # allocator admitting it does not know; a rhythm pick is the operator
+    # deciding something regardless of what it knows. Putting them in one number
+    # would make the page claim more evidence behind the slate than there is.
+    if rhythm:
+        floor_line += (f" A further {rhythm} of {total} "
+                       f"{'is' if rhythm == 1 else 'are'} the rhythm floor: "
+                       f"reserved for {', '.join(sorted(genres.RHYTHM_LED))} "
+                       f"whatever the ratings say, because this catalogue is made "
+                       f"to be used in vertical video and a day of ballads cannot "
+                       f"be. That is a taste decision, not a measurement, and it "
+                       f"biases the record — those families accumulate rated "
+                       f"briefs faster than the rest.")
 
     return heading, "".join([
         f'<p class="sub">{esc(caption)}</p>',
