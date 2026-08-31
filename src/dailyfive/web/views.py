@@ -1256,7 +1256,47 @@ def _genre_slate_block(latest: tuple[date, dict] | None, cfg,
               body, empty="no slate — the allocator returned nothing",
               num_cols={1}),
         (f'<p class="sub">{esc(floor_line)}</p>' if floor_line else ""),
+        _language_line(cfg),
     ])
+
+
+def _language_line(cfg) -> str:
+    """Which languages this container can actually render, read off the container.
+
+    Here because it is otherwise unobservable. languages.available() filters the
+    roster by asking fontconfig, on the machine doing the rendering — so a build
+    whose font packages failed to install does not crash or warn, it quietly
+    ships English-only days, and the first sign would be a month of songs that
+    are all English for no stated reason. This line is the only thing that can
+    tell "the floor is off" from "the fonts are gone".
+    """
+    want = cfg.language_briefs
+    ok = languages.available()
+    missing = [lg.name for lg in languages.LANGUAGES if lg not in ok]
+
+    if not want:
+        return ('<p class="sub">Second languages are switched off '
+                '(LANGUAGE_BRIEFS=0): every song is English throughout.</p>')
+    if not ok:
+        return ('<p class="sub p-bad">No language is renderable on this '
+                'container — the font packages are missing, so the studio ships '
+                'English-only days rather than boxes. Rebuild the image; the '
+                'Dockerfile names what is needed.</p>')
+
+    names = ", ".join(lg.name for lg in ok)
+    line = (f"{want} of {cfg.total_briefs} briefs a day carry one section in a "
+            f"second language, rotated evenly through {names}. The roster is "
+            f"checked against this container's fonts when it is allocated: a "
+            f"script with no font would burn into the lyric video as boxes with "
+            f"nothing failing, so a language that cannot be rendered is not "
+            f"briefed.")
+    if missing:
+        gone = ", ".join(missing)
+        return (f'<p class="sub p-bad">{esc(line)} {esc(gone)} '
+                f'{"is" if len(missing) == 1 else "are"} in the roster with no '
+                f'font here and will never be briefed — this image is missing a '
+                f'font package.</p>')
+    return f'<p class="sub">{esc(line)}</p>'
 
 
 def _genre_history(s, days: int = 30) -> str:

@@ -771,3 +771,37 @@ def test_the_deploy_smoke_test_asks_for_every_console_page():
     asked = set(line.removeprefix("for p in ").split(";")[0].split())
     missing = {href for href, _ in NAV} - asked
     assert not missing, f"verify-production.sh never requests {sorted(missing)}"
+
+
+def test_the_genre_page_names_the_languages_this_container_can_render(client):
+    """Otherwise unobservable. languages.available() filters the roster by
+    asking fontconfig on the machine that renders, so an image whose font
+    packages failed to install does not crash or warn — it quietly ships
+    English-only days, and the first sign would be a month of English songs for
+    no stated reason."""
+    from dailyfive.config import settings
+    body = client.get("/genres").text
+    if not settings().language_briefs:
+        assert "switched off" in body
+        return
+    assert "second language" in body
+    assert "Spanish" in body and "Korean" in body and "Arabic" in body
+
+
+def test_the_genre_page_says_so_loudly_when_a_font_is_missing(client, monkeypatch):
+    from dailyfive import languages
+    from dailyfive.web import views
+
+    only_latin = tuple(lg for lg in languages.LANGUAGES if lg.script == "Latin")
+    monkeypatch.setattr(views.languages, "available", lambda: only_latin)
+    body = client.get("/genres").text
+    assert "missing a font package" in body
+    assert "Korean" in body
+
+
+def test_the_genre_page_survives_every_font_being_gone(client, monkeypatch):
+    from dailyfive.web import views
+    monkeypatch.setattr(views.languages, "available", lambda: ())
+    r = client.get("/genres")
+    assert r.status_code == 200
+    assert "English-only days rather than boxes" in r.text
