@@ -172,6 +172,14 @@ class Brief(Base):
     genre_family: Mapped[str | None] = mapped_column(String(24))
     genre: Mapped[str | None] = mapped_column(String(40))
 
+    # The second language one section of this song is written in, and where it
+    # sits. NULL means the song is English throughout, which is most of them.
+    # A column and not a diversity_vector key for the same reason genre is one:
+    # "do Spanish hooks travel further" is a question about a controlled label
+    # joined against outcomes, and free-form JSON cannot be grouped by.
+    language: Mapped[str | None] = mapped_column(String(8))
+    language_placement: Mapped[str | None] = mapped_column(String(24))
+
     diversity_vector: Mapped[dict] = mapped_column(JSON, default=dict)
     lyrics: Mapped[str | None] = mapped_column(Text)
     lyric_hash: Mapped[str | None] = mapped_column(String(64))
@@ -253,6 +261,11 @@ class Clip(Base):
     theme: Mapped[str | None] = mapped_column(Text)
     genre_family: Mapped[str | None] = mapped_column(String(24))
     genre: Mapped[str | None] = mapped_column(String(40))
+    # Copied from the brief, like genre: what was ASKED FOR. Nothing here
+    # listens to the audio to confirm a Korean verse was actually sung in
+    # Korean, and there is no language_observed column for the same reason
+    # there is no genre_observed one.
+    language: Mapped[str | None] = mapped_column(String(8))
     style_string: Mapped[str | None] = mapped_column(Text)
     negative_tags: Mapped[str | None] = mapped_column(Text)
     persona_id: Mapped[str | None] = mapped_column(String(120))

@@ -188,6 +188,11 @@ class Settings:
     # How many of the day's briefs must land in a rhythm-led family. A taste
     # decision, not a learned one — see genres.RHYTHM_LED for what it costs.
     genre_rhythm_floor: int = field(default_factory=lambda: _i("GENRE_RHYTHM_FLOOR", 2))
+    # How many of the day's briefs carry one section in a second language.
+    # Two of seven: enough that the catalogue is visibly international, few
+    # enough that the studio still ships mostly in the language its Producer can
+    # actually judge a lyric in.
+    language_briefs: int = field(default_factory=lambda: _i("LANGUAGE_BRIEFS", 2))
     daily_credit_cap: int = field(default_factory=lambda: _i("DAILY_CREDIT_CAP", 800))
     # Polling cadence. Generation takes 60-90s, so a 20s interval notices
     # promptly without hammering the API. Tests drop these to zero.
@@ -258,6 +263,10 @@ class Settings:
                 f"SHORT_SLOTS ({self.short_slots}) exceeds SHORT_BRIEFS ({self.short_briefs})")
         if not 10 <= self.short_duration_s <= 360:
             raise ConfigError("SHORT_DURATION_S must be between 10 and 360 (Suno V5_5 limit)")
+        if not 0 <= self.language_briefs <= self.total_briefs:
+            raise ConfigError(
+                f"LANGUAGE_BRIEFS ({self.language_briefs}) must be between 0 and "
+                f"the day's {self.total_briefs} briefs")
         if not 0 <= self.genre_rhythm_floor <= self.total_briefs:
             raise ConfigError(
                 f"GENRE_RHYTHM_FLOOR ({self.genre_rhythm_floor}) must be between "

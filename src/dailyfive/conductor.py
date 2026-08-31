@@ -288,6 +288,7 @@ class Conductor:
                     slot_type=brief.slot_type,
                     theme=brief.theme,
                     genre_family=brief.genre_family, genre=brief.genre,
+                    language=brief.language,
                     style_string=payload.get("style"),
                     negative_tags=payload.get("negativeTags"),
                     persona_id=payload.get("personaId"), model=payload.get("model"),

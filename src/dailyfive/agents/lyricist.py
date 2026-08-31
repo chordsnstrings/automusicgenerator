@@ -19,6 +19,7 @@ import hashlib
 import logging
 import re
 
+from .. import languages
 from ..errors import ProviderError
 from .base import ask
 
@@ -69,7 +70,8 @@ def run(brief: dict, *, client=None) -> dict:
     drafts: list[str] = []
     for n in (1, 2):
         try:
-            text = ask("lyricist", system, prompt + _variation(n, slot),
+            text = ask("lyricist", system, prompt + _variation(
+                n, slot, has_language=bool(brief.get("language"))),
                        max_tokens=2500, temperature=0.95 if n == 1 else 1.05,
                        label=f"draft{n}:{title[:24]}")
             cleaned = _clean(text)
@@ -129,16 +131,32 @@ def _brief_prompt(brief: dict) -> str:
         bits.append(f"Grammatical person: {dv['person']}")
     if brief.get("persona_name"):
         bits.append(f"Sung by: {brief['persona_name']}")
+
+    # Last, and deliberately so. It is the instruction most likely to be
+    # half-followed — a model given it early writes an English song and
+    # sprinkles a stray foreign line through it — and putting it at the end of
+    # the brief keeps it as the last thing read before writing starts.
+    lang = languages.get(brief.get("language"))
+    if lang:
+        bits.append("")
+        bits.append(languages.brief_note(
+            lang, brief.get("language_placement") or "second verse"))
     return "\n".join(bits)
 
 
-def _variation(n: int, slot: str) -> str:
+def _variation(n: int, slot: str, *, has_language: bool = False) -> str:
     if n == 1:
         return "\n\nWrite the lyric. Return only the lyric with its section tags."
     length = "under 20 lines" if slot == "short" else "the same song form and length"
+    # The second draft is told to change everything except the language, which
+    # was allocated for the day and is not the draft's to drop. Without this the
+    # variation instruction reads as licence to write a different song, and the
+    # foreign section is the first thing a rewrite loses.
+    keep = (" Keep the second-language section: same language, same placement, "
+            "different words." if has_language else "")
     return ("\n\nWrite a DIFFERENT lyric for the same brief — a different entry point, "
-            f"a different central image, a different opening line. {length.capitalize()}. "
-            "Return only the lyric with its section tags.")
+            f"a different central image, a different opening line. {length.capitalize()}."
+            f"{keep} Return only the lyric with its section tags.")
 
 
 def _choose(brief: dict, drafts: list[str]) -> tuple[str, int]:

@@ -61,7 +61,7 @@ against. The third is an open decision — see §8.
 
 ## 3. The roster — 12 agents
 
-Eight added to the five originally proposed. Each is justified by the specific failure it
+Nine added to the five originally proposed. Each is justified by the specific failure it
 prevents.
 
 | # | Agent | Status | Prevents | LLM |
@@ -79,8 +79,9 @@ prevents.
 | 11 | **Packager** | **added** | A bucket of untitled WAVs you cannot use | light |
 | 12 | **Archivist** | **added** | Day 30 being exactly as good as day 1 | weekly retro only |
 | 13 | **Video Director** | **added** | Two clips of "dancing" cutting together into a loop a viewer spots at 0:03 | any brain, small is enough |
+| 14 | **Language floor** | **added** | An international catalogue that never happens because "sometimes write a Spanish verse" is an instruction a model forgets | none — code, and gated on fonts |
 
-**Five of thirteen have no model in them at all.** That is what makes the system cheap
+**Six of fourteen have no model in them at all.** That is what makes the system cheap
 enough to run 365 days a year and reliable enough to run unattended. Put a language
 model where a measurement belongs and you get a system that hallucinates that the
 audio is fine.
@@ -535,6 +536,7 @@ src/dailyfive/
 ├── cli.py           operator commands
 ├── agents/          the eight roles that need a model
 ├── publish/         upload to TikTok and YouTube, then read the counts back
+├── languages.py     the second language a song carries, gated on renderability
 ├── providers/       suno, minimax, modelark
 ├── signals/         the seven free feeds
 └── web/             callback receiver, rating endpoint, the delivered day page

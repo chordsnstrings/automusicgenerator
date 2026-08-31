@@ -298,6 +298,10 @@ def build_meta(clip: dict, brief: dict, run_date: date, slot_index: int,
             # file" when it appeared nowhere but inside the null block itself.
             "genre_family": brief.get("genre_family"),
             "genre": brief.get("genre"),
+            # Null on an English-only song, which is most of them, and that
+            # null is a fact rather than a gap — see the language columns.
+            "second_language": brief.get("language"),
+            "second_language_placement": brief.get("language_placement"),
             "bpm": brief.get("bpm"),
             "key": brief.get("musical_key") or brief.get("key"),
             "song_form": brief.get("song_form"),

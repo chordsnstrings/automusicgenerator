@@ -18,7 +18,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from . import archivist, codex, genres, ledger
+from . import archivist, codex, genres, languages, ledger
 from .agents import anr, clearance, compiler, director, lyricist, producer, scout
 from .config import settings
 from .conductor import Conductor
@@ -201,6 +201,27 @@ def _phase_brief(run_id: int, cfg) -> RunPhase:
     genre_ledger["label_only"] = sum(1 for sp in specs if sp.get("genre_label_only"))
 
     briefs = anr.run(specs, cx)
+
+    # Allocated here rather than asked of the A&R, for the reason every floor in
+    # this pipeline is: an instruction to "sometimes write a Spanish verse" is
+    # followed on the days a model happens to and forgotten on the days it does
+    # not, and a signal that appears at a rate nobody set teaches nothing. The
+    # roster is filtered by what this machine can actually render, so a container
+    # missing its font packages ships English songs rather than tofu.
+    with session_scope() as s:
+        day = s.get(Run, run_id).run_date
+    tongues = languages.assign(len(briefs), floor=cfg.language_briefs,
+                               run_date=day)
+    for idx, (lang, placement) in tongues.items():
+        if idx < len(briefs):
+            briefs[idx]["language"] = lang.code
+            briefs[idx]["language_placement"] = placement
+    if tongues:
+        log.info("language: %s", ", ".join(
+            f"{languages.get(briefs[i]['language']).name} in the "
+            f"{briefs[i]['language_placement']}" for i in sorted(tongues)
+            if i < len(briefs)))
+
     with session_scope() as s:
         s.execute(Brief.__table__.delete().where(Brief.run_id == run_id))
         counters = {"full": 0, "short": 0}
@@ -217,6 +238,8 @@ def _phase_brief(run_id: int, cfg) -> RunPhase:
                 vocal_gender=b.get("vocal_gender"),
                 style_string=b.get("style_string"),
                 genre_family=b.get("genre_family"), genre=b.get("genre"),
+                language=b.get("language"),
+                language_placement=b.get("language_placement"),
                 negative_tags=cx.negative_tags(),
                 diversity_vector={**(b.get("diversity_vector") or {}),
                                   "angle": b.get("angle"),
@@ -229,7 +252,13 @@ def _phase_brief(run_id: int, cfg) -> RunPhase:
         # without the briefs it allocated is a plan nothing carried out, and a
         # crash between the two would leave the console reporting a day that
         # did not happen.
-        run.notes = {**(run.notes or {}), "genre": {"slate": slate, **genre_ledger}}
+        run.notes = {**(run.notes or {}), "genre": {"slate": slate, **genre_ledger},
+                     "languages": {
+                         "briefs": {str(i): {"code": briefs[i]["language"],
+                                             "placement": briefs[i]["language_placement"]}
+                                    for i in sorted(tongues) if i < len(briefs)},
+                         "roster": [lg.code for lg in languages.available()],
+                     }}
     log.info("brief: %s", ", ".join(f"{n} {name}" for name, n in counters.items() if n))
     if (genre_ledger["unlabelled"] or genre_ledger["off_slate"]
             or genre_ledger["label_only"]):
@@ -752,6 +781,7 @@ def _brief_dict(b: Brief) -> dict:
         "instrumentation": b.instrumentation, "vocal_gender": b.vocal_gender,
         "style_string": b.style_string, "negative_tags": b.negative_tags,
         "genre_family": b.genre_family, "genre": b.genre,
+        "language": b.language, "language_placement": b.language_placement,
         "persona_id": b.persona_id, "persona_name": b.persona_name,
         "persona_model": dv.get("persona_model"),
         "angle": dv.get("angle"), "hook_note": dv.get("hook_note"),
@@ -770,7 +800,7 @@ def _clip_dict(c: Clip) -> dict:
         # slots 1 and 2 and held a fifth distinct song; its own rationale said
         # "five leading themes with one track each", because it could not see
         # the pairing either.
-        "brief_id": c.brief_id,
+        "brief_id": c.brief_id, "language": c.language,
         "slot_type": c.slot_type.value, "duration_s": c.duration_s,
         "style_string": c.style_string, "negative_tags": c.negative_tags,
         "model": c.model, "vocal_gender": c.vocal_gender,

@@ -8,7 +8,7 @@ from datetime import date, timedelta
 
 from sqlalchemy import func, select
 
-from .. import genres, ledger, llm
+from .. import genres, languages, ledger, llm
 from ..archivist import aggregate, learning_status
 from ..codex import current as current_codex
 from ..codex import is_negation
@@ -264,9 +264,14 @@ def _rate(clip_id: int, rating: int | None, back: str) -> str:
 
 
 def _song_meta(c: Clip, persona: str | None) -> str:
+    lang = languages.get(getattr(c, "language", None))
     bits = [b for b in (c.slot_type.value,
                         f"{c.bpm_target} BPM" if c.bpm_target else None,
-                        c.musical_key, dur(c.duration_s), persona) if b]
+                        c.musical_key, dur(c.duration_s), persona,
+                        # Only when there is one. An "English" label on every
+                        # other card would be noise on the four songs a day that
+                        # are simply songs.
+                        f"{lang.name} section" if lang else None) if b]
     return esc(" · ".join(str(b) for b in bits))
 
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from .. import languages
 from ..config import settings
 from ..errors import ConfigError
 from ..providers.suno import DURATION_MODELS, MODEL_LIMITS
@@ -50,7 +51,18 @@ def compile_payload(brief: dict, *, model: str | None = None,
     warnings: list[str] = []
     slot_type = brief.get("slot_type", "full")
 
-    style = _fit(brief.get("style_string") or "", limits["style"], "style", warnings)
+    # The style string names the second language when there is one. The lyric
+    # already carries the foreign script and Suno reads it, but the style field
+    # is what steers the VOICE — without it a Korean verse comes back sung with
+    # English phonology, which is the accent equivalent of tofu. Prepended and
+    # trimmed to fit like everything else, so a long style string loses its tail
+    # rather than this.
+    raw_style = brief.get("style_string") or ""
+    lang = languages.get(brief.get("language"))
+    if lang and raw_style:
+        raw_style = (f"{lang.name}-language {brief.get('language_placement') or 'verse'}, "
+                     f"native {lang.name} pronunciation; {raw_style}")
+    style = _fit(raw_style, limits["style"], "style", warnings)
     title = _fit(brief.get("title") or "Untitled", limits["title"], "title", warnings)
     lyrics = _fit(brief.get("lyrics") or "", limits["prompt"], "prompt", warnings)
 
