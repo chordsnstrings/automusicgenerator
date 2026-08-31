@@ -70,3 +70,24 @@ The migration runs at container start, under an advisory lock, in both the web
 service and the worker. A deployment reaching ACTIVE means the image built and
 the health check passed — it does not mean the schema moved. Check `/health`
 and the console before believing it.
+
+
+## Publishing is manual
+
+There is no `publish` scheduler slot, deliberately. The short is built at 06:30
+and stored beside the song as `short.mp4`; posting it is a person's decision.
+
+Download it from the day page and post it by hand, or — once the OAuth
+credentials are set — run:
+
+```bash
+dailyfive publish up <clip_id> --file short.mp4 --platform tiktok
+dailyfive publish status <clip_id>
+```
+
+`dailyfive publish metrics` reads view counts back into `publications`, which is
+what turns the Archivist's value function from your 1-10 rating into what an
+audience actually did. Both need `TIKTOK_*` / `YOUTUBE_*` in the app's env; none
+are set today, so neither uploading nor reading counts back works yet. Posting
+by hand in the apps still works and costs nothing — it just leaves the studio
+with no view counts to learn from.

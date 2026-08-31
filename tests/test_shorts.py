@@ -303,3 +303,90 @@ def test_a_song_with_no_delivered_audio_is_refused(monkeypatch, brief_factory,
     monkeypatch.setattr(shorts, "materialise", lambda p, w: (None, None))
     with pytest.raises(DailyFiveError, match="no delivered audio"):
         shorts.build_for_day(run_date=date(2026, 8, 27))
+
+
+# ── the attempt is recorded either way ───────────────────────────────────────
+def _one_shipped_clip(brief_factory, run_id, key="songs/2026-08-27/01_x"):
+    from dailyfive.db import session_scope
+    from dailyfive.models import Clip, Job, JobState, SlotType
+    brief_id = brief_factory(0)
+    with session_scope() as s:
+        job = Job(run_id=run_id, brief_id=brief_id, state=JobState.SUCCESS,
+                  idempotency_key="k")
+        s.add(job)
+        s.flush()
+        clip = Clip(run_id=run_id, job_id=job.id, brief_id=brief_id, audio_id="a",
+                    slot_type=SlotType.FULL, shipped=True, score_total=8.0,
+                    spaces_key=key)
+        s.add(clip)
+        s.flush()
+        return clip.id
+
+
+def test_a_failed_short_is_written_onto_the_run(monkeypatch, brief_factory, run_id):
+    """The slot catches, logs and forgets. Without this the run page cannot tell
+    a spent video allowance from a day nobody asked for a short."""
+    from dailyfive.db import session_scope
+    from dailyfive.errors import DailyFiveError
+    from dailyfive.models import Run
+
+    _one_shipped_clip(brief_factory, run_id)
+    monkeypatch.setattr(shorts, "materialise", lambda p, w: (None, None))
+    with pytest.raises(DailyFiveError):
+        shorts.build_for_day(run_date=date(2026, 8, 27))
+
+    with session_scope() as s:
+        note = (s.get(Run, run_id).notes or {}).get("short")
+    assert note and note["ok"] is False
+    assert "no delivered audio" in note["error"]
+
+
+def test_a_successful_short_is_written_onto_the_run(monkeypatch, wired, tmp_path,
+                                                    brief_factory, run_id):
+    from dailyfive.db import session_scope
+    from dailyfive.models import Run
+
+    _one_shipped_clip(brief_factory, run_id)
+
+    def fake_materialise(prefix, work):
+        work.mkdir(parents=True, exist_ok=True)
+        (work / "master.wav").write_bytes(b"audio")
+        return work / "master.wav", None
+
+    monkeypatch.setattr(shorts, "materialise", fake_materialise)
+    shorts.build_for_day(run_date=date(2026, 8, 27), upload=False,
+                         out=str(tmp_path / "s.mp4"))
+
+    with session_scope() as s:
+        note = (s.get(Run, run_id).notes or {}).get("short")
+    assert note and note["ok"] is True
+    assert note["result"]["performer"]
+
+
+def test_recording_the_attempt_never_masks_the_real_failure(monkeypatch,
+                                                            brief_factory, run_id):
+    """The caller still gets the error that actually mattered.
+
+    _record exists to explain a failure, so a bookkeeping error while explaining
+    one must not replace the explanation with a different, less useful
+    exception. Tested against the real _record with the database broken under
+    it, not against a stub — a stub would only prove the stub raises.
+    """
+    from dailyfive import db
+    from dailyfive.errors import DailyFiveError
+
+    _one_shipped_clip(brief_factory, run_id)
+    monkeypatch.setattr(shorts, "materialise", lambda p, w: (None, None))
+
+    calls = {"n": 0}
+    real_scope = db.session_scope
+
+    def breaks_only_for_the_note(*a, **kw):
+        calls["n"] += 1
+        if calls["n"] > 1:          # the first is build_for_day's own lookup
+            raise RuntimeError("database is gone")
+        return real_scope(*a, **kw)
+
+    with pytest.raises(DailyFiveError, match="no delivered audio"):
+        monkeypatch.setattr(db, "session_scope", breaks_only_for_the_note)
+        shorts.build_for_day(run_date=date(2026, 8, 27))

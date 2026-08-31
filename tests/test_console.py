@@ -805,3 +805,42 @@ def test_the_genre_page_survives_every_font_being_gone(client, monkeypatch):
     r = client.get("/genres")
     assert r.status_code == 200
     assert "English-only days rather than boxes" in r.text
+
+
+def test_a_failed_short_says_why_on_the_run_page(client, populated):
+    """A scheduler slot that raises is caught, logged and forgotten, so a failed
+    video left the page looking exactly like a day nobody asked for one. "The
+    video allowance was spent" is actionable; "no short today" is not."""
+    from dailyfive.db import session_scope
+    from dailyfive.models import Run
+    with session_scope() as s:
+        run = s.get(Run, populated)
+        run.notes = {**(run.notes or {}), "short": {
+            "ok": False, "clip_id": 1,
+            "error": "[minimax-video] plan usage limit reached — the day's "
+                     "video allowance is spent"}}
+    body = client.get("/runs/2026-08-27").text
+    assert "No short" in body
+    assert "allowance is spent" in body
+
+
+def test_a_built_short_says_so_and_that_posting_is_manual(client, populated):
+    from dailyfive.db import session_scope
+    from dailyfive.models import Run
+    with session_scope() as s:
+        run = s.get(Run, populated)
+        run.notes = {**(run.notes or {}), "short": {
+            "ok": True, "clip_id": 1,
+            "result": {"performer": "amara", "duration_s": 20.0,
+                       "clips": ["clip0.mp4", "clip1.mp4"]}}}
+    body = client.get("/runs/2026-08-27").text
+    assert "Short built" in body
+    assert "amara" in body and "2 takes" in body
+    assert "Publishing is manual" in body
+
+
+def test_a_day_with_no_short_attempt_shows_nothing(client, populated):
+    """Silence is right when nothing was tried — the note exists to explain an
+    attempt, not to advertise a feature."""
+    body = client.get("/runs/2026-08-27").text
+    assert "No short" not in body and "Short built" not in body

@@ -255,21 +255,57 @@ def build_for_day(*, clip_id: int | None = None, run_date: date | None = None,
         chosen, when, key_prefix = clip.id, run_row.run_date, clip.spaces_key
 
     work = settings().work_dir / "shorts" / str(chosen)
-    audio, lrc = materialise(key_prefix, work)
-    if audio is None:
-        raise DailyFiveError(f"clip {chosen} has no delivered audio to cut against")
 
-    dest = Path(out) if out else work / "short.mp4"
-    result = make(clip_id=chosen, brief=brief, audio=audio, lrc=lrc,
-                  run_date=when, dest=dest, work=work, force=force)
+    # From here on the outcome is recorded either way. The short runs on a
+    # scheduler slot, and a slot that raises is caught, logged and forgotten —
+    # so a failed video left nothing behind at all and the console showed the
+    # same blank as a day nobody asked for one. That is the difference between
+    # "no short today" and "the video allowance was spent at 06:31", and it is
+    # not a difference a log line an operator never reads can carry.
+    try:
+        audio, lrc = materialise(key_prefix, work)
+        if audio is None:
+            raise DailyFiveError(
+                f"clip {chosen} has no delivered audio to cut against")
 
-    if upload and key_prefix:
-        from .storage import open_store
-        store = open_store()
-        stored = f"{key_prefix.rstrip('/')}/short.mp4"
-        store.upload(dest, stored, clip_id=chosen)
-        result.stored_url = store.signed_url(stored)
+        dest = Path(out) if out else work / "short.mp4"
+        result = make(clip_id=chosen, brief=brief, audio=audio, lrc=lrc,
+                      run_date=when, dest=dest, work=work, force=force)
+
+        if upload and key_prefix:
+            from .storage import open_store
+            store = open_store()
+            stored = f"{key_prefix.rstrip('/')}/short.mp4"
+            store.upload(dest, stored, clip_id=chosen)
+            result.stored_url = store.signed_url(stored)
+    except Exception as exc:
+        _record(run_id_for=chosen, ok=False, detail=str(exc)[:400])
+        raise
+
+    _record(run_id_for=chosen, ok=True, detail=result.as_dict())
     return result
+
+
+def _record(*, run_id_for: int, ok: bool, detail) -> None:
+    """Write the attempt onto the run, so the console can say what happened.
+
+    Best-effort and never raises: this exists to explain a failure, and a
+    bookkeeping error while explaining one would replace the explanation with a
+    different, less useful exception.
+    """
+    from .db import session_scope
+    from .models import Clip, Run, utcnow
+    try:
+        with session_scope() as s:
+            clip = s.get(Clip, run_id_for)
+            if clip is None:
+                return
+            run = s.get(Run, clip.run_id)
+            note = {"ok": ok, "clip_id": run_id_for, "at": utcnow().isoformat()}
+            note["result" if ok else "error"] = detail
+            run.notes = {**(run.notes or {}), "short": note}
+    except Exception as exc:                     # never mask the real failure
+        log.warning("could not record the short attempt: %s", exc)
 
 
 def materialise(key_prefix: str | None, work: Path) -> tuple[Path | None, Path | None]:

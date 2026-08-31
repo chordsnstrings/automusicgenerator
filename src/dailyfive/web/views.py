@@ -706,6 +706,7 @@ def run_detail(run_date: date) -> str | None:
         _phase_flow(run.phase),
         _shortfall_note(run),
         _art_note(run),
+        _short_note(run),
         "<h2>What the Scout found</h2>",
         table(["#", "Theme", "Feeling", "Lead", "Conf.", "Sources", "Evidence"],
               sig_rows, empty="no signals recorded", num_cols={0, 4}),
@@ -768,6 +769,31 @@ def _art_note(run: Run) -> str:
     reason = art.get("reason") or "not configured"
     return (f'<div class="note"><span>No cover art</span>'
             f'{esc(reason)} — the songs shipped without it.</div>')
+
+
+def _short_note(run: Run) -> str:
+    """What the 06:30 short slot did, including when it did nothing.
+
+    A scheduler slot that raises is caught, logged and forgotten, so a failed
+    video used to leave the run page looking exactly like a day nobody asked for
+    one. The two are very different — "the video allowance was spent" is
+    actionable and "no short today" is not — and a log line nobody reads cannot
+    carry the difference.
+    """
+    note = (run.notes or {}).get("short")
+    if not note:
+        return ""
+    if note.get("ok"):
+        got = note.get("result") or {}
+        bits = [f'{got.get("duration_s", 0):.0f}s' if got.get("duration_s") else None,
+                f'performer {got["performer"]}' if got.get("performer") else None,
+                f'{len(got.get("clips") or [])} takes' if got.get("clips") else None]
+        made = " · ".join(b for b in bits if b)
+        return (f'<div class="note"><span>Short built</span>'
+                f'clip {int(note.get("clip_id") or 0)}{" — " + esc(made) if made else ""}. '
+                f'Publishing is manual: download it and post it yourself.</div>')
+    return (f'<div class="note bad"><span>No short</span>'
+            f'{esc(str(note.get("error") or "failed"))}</div>')
 
 
 def _qc_cell(q: dict) -> str:
