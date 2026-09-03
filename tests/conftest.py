@@ -37,6 +37,9 @@ NEUTRALISED = (
     "GENRE_EXPLORE_BRIEFS",
     "VIDEO_CLIPS", "VIDEO_CLIP_SECONDS", "VIDEO_RESOLUTION", "MINIMAX_VIDEO_MODEL",
     "GENRE_RHYTHM_FLOOR", "LANGUAGE_BRIEFS",
+    # Not ANTHROPIC_MODEL: the default in config.py is the product's choice
+    # of model, and blanking it makes every anthropic role unresolvable.
+    "ANTHROPIC_WORKSPACE_ID", "ANTHROPIC_EFFORT",
 )
 
 

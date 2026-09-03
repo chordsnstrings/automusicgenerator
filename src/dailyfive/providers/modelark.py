@@ -20,9 +20,20 @@ PROVIDER = "modelark"
 # Hard ceiling is 16,777,216 pixels; 3000x3000 is 9,000,000.
 COVER_SIZE = "3000x3000"
 
-# 9:16 for the short's reference frame, at the resolution the video model
-# generates into. Larger buys nothing: the still is only ever the first frame.
-STILL_SIZE = "1080x1920"
+# 9:16 for the short's reference frame. 1440x2560 and not the 1080x1920 that
+# "the resolution the video model generates into" suggested, because Seedream
+# has a FLOOR as well as a ceiling and 1080x1920 is under it:
+#
+#   The parameter `size` specified in the request is not valid:
+#   image size must be at least 3686400 pixels
+#
+# 1080x1920 is 2,073,600. 1440x2560 is 3,686,400 — the smallest 9:16 frame the
+# model will accept, exactly on the floor. That cost the studio its first short:
+# the 06:30 slot on 2026-09-03 failed here, on the very first day it ran.
+#
+# The floor also crosses Seedream's own price break at 2.36M pixels, so a still
+# costs $0.09 rather than $0.045. There is no cheaper way to get one.
+STILL_SIZE = "1440x2560"
 
 
 class ModelArkClient:

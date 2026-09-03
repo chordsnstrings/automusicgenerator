@@ -83,6 +83,14 @@ class Settings:
     # Claude
     anthropic_api_key: str = field(default_factory=lambda: _s("ANTHROPIC_API_KEY"))
     anthropic_model: str = field(default_factory=lambda: _s("ANTHROPIC_MODEL", "claude-opus-5"))
+    # Required by an identity-linked key: every request, including GET
+    # /v1/models, is refused without it, so a key cannot discover its own
+    # workspace and this cannot be looked up at runtime. Blank is fine for a
+    # classic key.
+    anthropic_workspace_id: str = field(default_factory=lambda: _s("ANTHROPIC_WORKSPACE_ID"))
+    # Thinking depth, and the only cost knob on this provider that is not the
+    # model itself. Blank uses the API default (high).
+    anthropic_effort: str = field(default_factory=lambda: _s("ANTHROPIC_EFFORT"))
 
     # MiniMax
     minimax_api_key: str = field(default_factory=lambda: _s("MINIMAX_API_KEY"))

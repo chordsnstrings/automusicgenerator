@@ -128,3 +128,135 @@ def test_managed_database_urls_get_a_driver_and_tls():
     assert "sslmode" not in n("postgresql://u:p@localhost/db")
     # SQLite passes through untouched.
     assert n("sqlite:///x.db") == "sqlite:///x.db"
+
+
+# ── the Anthropic backend, and the three ways Claude is not an OpenAI endpoint ──
+class _FakeMessages:
+    def __init__(self, box):
+        self.box = box
+
+    def create(self, **kw):
+        self.box["sent"] = kw
+        return type("R", (), {
+            "content": [type("B", (), {"type": "text", "text": "ok"})()],
+            "stop_reason": "end_turn", "stop_details": None,
+        })()
+
+
+class _FakeClient:
+    def __init__(self, box, **kw):
+        box["client_kwargs"] = kw
+        self.messages = _FakeMessages(box)
+
+
+def _anthropic(monkeypatch, **envs):
+    """A live-looking Anthropic backend with the SDK stubbed out."""
+    import sys
+    import types
+
+    from dailyfive import llm
+    from dailyfive.config import reload_settings
+
+    box = {}
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    for k, v in envs.items():
+        monkeypatch.setenv(k, v)
+    reload_settings()
+    llm.AnthropicBackend.reset()
+
+    fake = types.ModuleType("anthropic")
+    fake.Anthropic = lambda **kw: _FakeClient(box, **kw)
+    monkeypatch.setitem(sys.modules, "anthropic", fake)
+    return llm.AnthropicBackend(), box
+
+
+def test_temperature_is_never_sent_to_claude(monkeypatch):
+    """Current Claude models REMOVED the sampling parameters — temperature,
+    top_p and top_k all return a 400. Every agent in this studio passes one
+    (1.05 for the Lyricist's second draft, 0.2 for a JSON repair turn), so
+    forwarding it would not degrade the switch, it would break every call."""
+    from dailyfive.llm import Brain
+
+    backend, box = _anthropic(monkeypatch)
+    backend.complete(Brain("anthropic", "claude-opus-5"), "sys", "usr",
+                     max_tokens=2500, temperature=1.05, json_mode=False)
+    assert "temperature" not in box["sent"]
+    assert "top_p" not in box["sent"] and "top_k" not in box["sent"]
+
+
+def test_a_tiny_max_tokens_is_raised_to_leave_room_for_thinking(monkeypatch):
+    """Thinking is on by default and comes out of the same budget as the answer.
+    The Lyricist's forced choice asks for one character with max_tokens=8; under
+    adaptive thinking that returns nothing at all."""
+    from dailyfive.llm import AnthropicBackend, Brain
+
+    backend, box = _anthropic(monkeypatch)
+    backend.complete(Brain("anthropic", "claude-opus-5"), "sys", "usr",
+                     max_tokens=8, temperature=0.0, json_mode=False)
+    assert box["sent"]["max_tokens"] == AnthropicBackend.MIN_TOKENS
+
+
+def test_a_generous_max_tokens_is_left_alone(monkeypatch):
+    from dailyfive.llm import Brain
+
+    backend, box = _anthropic(monkeypatch)
+    backend.complete(Brain("anthropic", "claude-opus-5"), "sys", "usr",
+                     max_tokens=64000, temperature=0.0, json_mode=False)
+    assert box["sent"]["max_tokens"] == 64000
+
+
+def test_the_workspace_header_is_sent_when_configured(monkeypatch):
+    """An identity-linked key rejects every request without it — including
+    GET /v1/models, so a key cannot be used to discover its own workspace."""
+    from dailyfive.llm import Brain
+
+    backend, box = _anthropic(monkeypatch, ANTHROPIC_WORKSPACE_ID="wrkspc_123")
+    backend.complete(Brain("anthropic", "claude-opus-5"), "s", "u",
+                     max_tokens=100, temperature=0.0, json_mode=False)
+    assert box["client_kwargs"]["default_headers"] == {
+        "anthropic-workspace-id": "wrkspc_123"}
+
+
+def test_no_workspace_header_is_sent_for_a_classic_key(monkeypatch):
+    from dailyfive.llm import Brain
+
+    backend, box = _anthropic(monkeypatch)
+    backend.complete(Brain("anthropic", "claude-opus-5"), "s", "u",
+                     max_tokens=100, temperature=0.0, json_mode=False)
+    assert box["client_kwargs"]["default_headers"] is None
+
+
+def test_effort_is_sent_only_when_configured(monkeypatch):
+    from dailyfive.llm import Brain
+
+    backend, box = _anthropic(monkeypatch)
+    backend.complete(Brain("anthropic", "claude-opus-5"), "s", "u",
+                     max_tokens=100, temperature=0.0, json_mode=False)
+    assert "output_config" not in box["sent"]
+
+    backend, box = _anthropic(monkeypatch, ANTHROPIC_EFFORT="medium")
+    backend.complete(Brain("anthropic", "claude-opus-5"), "s", "u",
+                     max_tokens=100, temperature=0.0, json_mode=False)
+    assert box["sent"]["output_config"] == {"effort": "medium"}
+
+
+def test_a_refusal_is_an_error_and_not_an_empty_string(monkeypatch):
+    """A refusal is a 200 with no text. Returning "" from here surfaces three
+    layers up as an unparseable JSON body rather than as what it is."""
+    import pytest
+
+    from dailyfive.errors import ProviderError
+    from dailyfive.llm import Brain
+
+    backend, box = _anthropic(monkeypatch)
+
+    def refuse(**kw):
+        return type("R", (), {
+            "content": [], "stop_reason": "refusal",
+            "stop_details": type("D", (), {"category": "cyber"})(),
+        })()
+
+    backend._get().messages.create = refuse
+    with pytest.raises(ProviderError, match="declined"):
+        backend.complete(Brain("anthropic", "claude-opus-5"), "s", "u",
+                         max_tokens=100, temperature=0.0, json_mode=False)

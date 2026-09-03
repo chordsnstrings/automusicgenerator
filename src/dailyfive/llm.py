@@ -74,29 +74,81 @@ class _Backend(Protocol):
 
 # ── provider implementations ─────────────────────────────────────────────────
 class AnthropicBackend:
+    """Claude, and the three ways it is not an OpenAI-dialect endpoint.
+
+    TEMPERATURE IS NOT SENT. Every agent in this studio passes one — 1.05 for
+    the Lyricist's second draft, 0.2 for a JSON repair turn — and current Claude
+    models REMOVED the sampling parameters: temperature, top_p and top_k all
+    return a 400. Forwarding the caller's value would not degrade the switch, it
+    would break every single call in the pipeline. The roles' intent survives
+    as `effort`, which is the knob that replaced it.
+
+    A FLOOR ON max_tokens. Thinking is on by default and its tokens come out of
+    the same budget as the answer, so a caller's ceiling sized for a
+    non-thinking model can be spent entirely on reasoning and return an empty
+    string. The Lyricist's forced choice asks for one character with
+    max_tokens=8; under adaptive thinking that returns nothing at all. The floor
+    is applied here rather than by editing eight call sites, because the number
+    is a property of the backend and not of any agent.
+
+    THE WORKSPACE HEADER. An identity-linked key rejects every request without
+    `anthropic-workspace-id` — including GET /v1/models, so a key cannot be used
+    to discover its own workspace. Sent as a default header when configured.
+    """
     name = "anthropic"
     _client = None
+
+    # Enough for adaptive thinking to finish and still leave an answer. The
+    # smallest real call in this studio wants eight tokens of output; the
+    # thinking in front of it does not fit in eight tokens.
+    MIN_TOKENS = 4096
+
+    @classmethod
+    def reset(cls) -> None:
+        """Drop the cached client so a config change takes effect."""
+        cls._client = None
 
     def _get(self):
         if AnthropicBackend._client is None:
             import anthropic
-            key = settings().anthropic_api_key
+            cfg = settings()
+            key = cfg.anthropic_api_key
             if not key:
                 raise ProviderError("anthropic", "ANTHROPIC_API_KEY is not set",
                                     retryable=False)
-            AnthropicBackend._client = anthropic.Anthropic(api_key=key)
+            headers = {}
+            if cfg.anthropic_workspace_id:
+                headers["anthropic-workspace-id"] = cfg.anthropic_workspace_id
+            AnthropicBackend._client = anthropic.Anthropic(
+                api_key=key, default_headers=headers or None)
         return AnthropicBackend._client
 
     def complete(self, brain, system, user, *, max_tokens, temperature,
                  json_mode) -> str:
         # No native JSON mode here; ask_json carries the schema in the prompt.
+        # temperature is accepted and deliberately dropped — see the class note.
+        body = {
+            "model": brain.model,
+            "max_tokens": max(int(max_tokens), self.MIN_TOKENS),
+            "system": system,
+            "messages": [{"role": "user", "content": user}],
+        }
+        effort = settings().anthropic_effort
+        if effort:
+            body["output_config"] = {"effort": effort}
         try:
-            resp = self._get().messages.create(
-                model=brain.model, max_tokens=max_tokens, temperature=temperature,
-                system=system, messages=[{"role": "user", "content": user}])
+            resp = self._get().messages.create(**body)
         except Exception as exc:
             raise ProviderError("anthropic", f"messages.create failed: {exc}",
                                 retryable=_looks_transient(exc)) from exc
+        # A refusal is a 200 with no text, and returning "" from here would
+        # surface three layers up as an unparseable JSON body rather than as
+        # what it is.
+        if getattr(resp, "stop_reason", None) == "refusal":
+            detail = getattr(getattr(resp, "stop_details", None), "category", None)
+            raise ProviderError("anthropic",
+                                f"the model declined this request ({detail or 'no category'})",
+                                retryable=False)
         return "\n".join(b.text for b in resp.content
                          if getattr(b, "type", None) == "text").strip()
 

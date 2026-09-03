@@ -390,3 +390,18 @@ def test_recording_the_attempt_never_masks_the_real_failure(monkeypatch,
     with pytest.raises(DailyFiveError, match="no delivered audio"):
         monkeypatch.setattr(db, "session_scope", breaks_only_for_the_note)
         shorts.build_for_day(run_date=date(2026, 8, 27))
+
+
+def test_the_reference_still_clears_seedreams_minimum_size():
+    """Seedream has a floor as well as a ceiling. 1080x1920 looked right — it is
+    what the video model generates into — and is 2,073,600 pixels against a
+    3,686,400 minimum. It cost the studio its first short: the 06:30 slot failed
+    on 2026-09-03, the first day it ever ran, with
+
+        image size must be at least 3686400 pixels
+    """
+    from dailyfive.providers.modelark import STILL_SIZE
+
+    w, h = (int(n) for n in STILL_SIZE.split("x"))
+    assert w * h >= 3_686_400, f"{STILL_SIZE} is {w * h:,} px, under the floor"
+    assert abs((h / w) - 16 / 9) < 0.01, "the still must be 9:16 for a vertical short"
