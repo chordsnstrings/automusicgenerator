@@ -11,7 +11,12 @@ from dailyfive.errors import ConfigError
 def env(monkeypatch):
     def setter(**kw):
         for k in list(kw) + [f"LLM_{r.upper()}" for r in llm.ROLES] + ["LLM_DEFAULT"]:
-            monkeypatch.delenv(k, raising=False)
+            # Not delenv: python-dotenv only skips a key already
+            # present in os.environ, so a DELETED key is put straight back from
+            # the operator's real .env by the reload below — which is how a test
+            # asserting the default brain silently asserted whatever the
+            # developer happened to be running.
+            monkeypatch.setenv(k, "")
         for k, v in kw.items():
             monkeypatch.setenv(k, v)
         return reload_settings()
@@ -164,7 +169,16 @@ def _anthropic(monkeypatch, **envs):
     reload_settings()
     llm.AnthropicBackend.reset()
 
+    # The client is stubbed; the exception taxonomy is NOT. complete() catches
+    # anthropic.APIStatusError and anthropic.APIConnectionError by type, so a
+    # module stub that omits them turns every error path into an AttributeError
+    # and the tests below would pass for the wrong reason.
+    import anthropic as real
+
     fake = types.ModuleType("anthropic")
+    for name in dir(real):
+        if name.endswith("Error"):
+            setattr(fake, name, getattr(real, name))
     fake.Anthropic = lambda **kw: _FakeClient(box, **kw)
     monkeypatch.setitem(sys.modules, "anthropic", fake)
     return llm.AnthropicBackend(), box
@@ -260,3 +274,65 @@ def test_a_refusal_is_an_error_and_not_an_empty_string(monkeypatch):
     with pytest.raises(ProviderError, match="declined"):
         backend.complete(Brain("anthropic", "claude-opus-5"), "s", "u",
                          max_tokens=100, temperature=0.0, json_mode=False)
+
+
+def test_a_truncated_answer_is_an_error_not_a_partial(monkeypatch):
+    """It reaches ask_json as unparseable JSON and burns the repair turn
+    re-truncating."""
+    import pytest
+
+    from dailyfive.errors import ProviderError
+    from dailyfive.llm import Brain
+
+    backend, box = _anthropic(monkeypatch)
+    backend._get().messages.create = lambda **kw: type("R", (), {
+        "content": [type("B", (), {"type": "text", "text": "half an ans"})()],
+        "stop_reason": "max_tokens", "stop_details": None})()
+    with pytest.raises(ProviderError, match="cut off") as exc:
+        backend.complete(Brain("anthropic", "claude-opus-5"), "s", "u",
+                         max_tokens=100, temperature=0.0, json_mode=False)
+    assert exc.value.retryable
+
+
+def test_a_dropped_connection_to_anthropic_is_retryable(monkeypatch):
+    """anthropic.APIConnectionError stringifies to the bare "Connection error.",
+    which matches none of the substrings _looks_transient greps for — so before
+    the typed chain, a dropped socket was filed as permanent and killed the
+    day's run."""
+    import pytest
+
+    from dailyfive.errors import ProviderError
+    from dailyfive.llm import Brain
+
+    backend, box = _anthropic(monkeypatch)
+
+    def drop(**kw):
+        import httpx2
+
+        import anthropic
+        raise anthropic.APIConnectionError(
+            request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages"))
+
+    backend._get().messages.create = drop
+    with pytest.raises(ProviderError) as exc:
+        backend.complete(Brain("anthropic", "claude-opus-5"), "s", "u",
+                         max_tokens=100, temperature=0.0, json_mode=False)
+    assert exc.value.retryable
+
+
+def test_the_effort_setting_is_validated_before_a_credit_is_spent():
+    """A typo is a 400 on every call. preflight runs validate_shape, so it fails
+    before the day's Suno credits are committed rather than after the Scout."""
+    import pytest
+
+    from dailyfive.config import reload_settings
+    from dailyfive.errors import ConfigError
+
+    import os
+    os.environ["ANTHROPIC_EFFORT"] = "hi"
+    try:
+        with pytest.raises(ConfigError, match="ANTHROPIC_EFFORT"):
+            reload_settings().validate_shape()
+    finally:
+        os.environ["ANTHROPIC_EFFORT"] = ""
+        reload_settings()

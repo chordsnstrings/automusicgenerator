@@ -98,10 +98,18 @@ class AnthropicBackend:
     name = "anthropic"
     _client = None
 
-    # Enough for adaptive thinking to finish and still leave an answer. The
-    # smallest real call in this studio wants eight tokens of output; the
-    # thinking in front of it does not fit in eight tokens.
-    MIN_TOKENS = 4096
+    # Every ceiling in this studio was sized against a model that does not think
+    # — MiniMax is sent thinking={"type":"disabled"} — so none of them leave room
+    # for reasoning that draws on the same budget. The Director asks for 6000 and
+    # needs most of it for the answer alone; the Lyricist's forced choice asks
+    # for 8.
+    #
+    # Raised here, once, rather than edited into eight call sites, because
+    # max_tokens is a CEILING and not an allocation: an unused ceiling costs
+    # nothing, so there is no reason to tune it per role. 16000 is the SDK's own
+    # guidance for a non-streaming request — high enough that thinking plus the
+    # answer fit, low enough to stay inside the HTTP timeout.
+    MIN_TOKENS = 16000
 
     @classmethod
     def reset(cls) -> None:
@@ -136,14 +144,33 @@ class AnthropicBackend:
         effort = settings().anthropic_effort
         if effort:
             body["output_config"] = {"effort": effort}
+        import anthropic
         try:
             resp = self._get().messages.create(**body)
+        except anthropic.APIStatusError as exc:
+            # Typed, because _looks_transient reads the message text and the SDK
+            # does not put the status in it. A 429 stringifies without the word
+            # "rate" and a dropped socket is the bare string "Connection error."
+            # — both would be filed as permanent and kill the day's run.
+            raise ProviderError("anthropic", f"HTTP {exc.status_code}: {exc}",
+                                retryable=exc.status_code in (408, 409, 429)
+                                or exc.status_code >= 500,
+                                status=exc.status_code) from exc
+        except anthropic.APIConnectionError as exc:
+            raise ProviderError("anthropic", f"connection failed: {exc}",
+                                retryable=True) from exc
         except Exception as exc:
             raise ProviderError("anthropic", f"messages.create failed: {exc}",
                                 retryable=_looks_transient(exc)) from exc
         # A refusal is a 200 with no text, and returning "" from here would
         # surface three layers up as an unparseable JSON body rather than as
         # what it is.
+        # A truncated answer is worse than no answer: it reaches ask_json as
+        # unparseable JSON and burns the repair turn re-truncating.
+        if getattr(resp, "stop_reason", None) == "max_tokens":
+            raise ProviderError("anthropic",
+                                f"answer hit the {body['max_tokens']} token ceiling "
+                                f"and was cut off", retryable=True)
         if getattr(resp, "stop_reason", None) == "refusal":
             detail = getattr(getattr(resp, "stop_details", None), "category", None)
             raise ProviderError("anthropic",

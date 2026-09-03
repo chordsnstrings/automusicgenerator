@@ -64,6 +64,23 @@ def preflight(*, require_ffmpeg: bool = True) -> list[str]:
             roles = [r for r, b in llm.roster().items() if b.provider == provider]
             problems.append(f"{attr_env[1]} is not set — needed by "
                             f"{', '.join(roles) or provider}")
+
+    # A key alone is not enough on Anthropic. An identity-linked key rejects
+    # every request without the workspace header, and there is no request that
+    # would tell you the workspace — so this cannot be discovered at runtime and
+    # a preflight that passes without it is a preflight that green-lights a day
+    # which 400s on the Scout's first call, after the Suno credits are committed.
+    #
+    # Only a warning-shaped problem when the key looks identity-linked would be
+    # guesswork; the header is harmless on a classic key, so it is simply
+    # required whenever Anthropic is in use.
+    if "anthropic" in cfg.brains_in_use() and cfg.anthropic_api_key \
+            and not cfg.anthropic_workspace_id:
+        problems.append(
+            "ANTHROPIC_WORKSPACE_ID is not set — an identity-linked key is "
+            "refused on every request without it, including the one that would "
+            "tell you the workspace. Read it from the Console URL for the "
+            "workspace.")
     try:
         cfg.validate_shape()
     except ConfigError as exc:

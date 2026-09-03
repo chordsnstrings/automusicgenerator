@@ -261,7 +261,17 @@ class Settings:
             pretty = ", ".join(env_names.get(m, m.upper()) for m in missing)
             raise ConfigError(f"missing required settings: {pretty}")
 
+    # The API's own set. A typo is a 400 on every single call, and preflight is
+    # the only place that can catch it before the day's Suno credits are
+    # committed.
+    EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
     def validate_shape(self) -> None:
+        if self.anthropic_effort and self.anthropic_effort not in self.EFFORT_LEVELS:
+            raise ConfigError(
+                f"ANTHROPIC_EFFORT={self.anthropic_effort!r} is not one of "
+                f"{', '.join(self.EFFORT_LEVELS)} — leave it blank for the "
+                f"API default")
         if self.full_slots > self.full_briefs:
             raise ConfigError(
                 f"FULL_SLOTS ({self.full_slots}) exceeds FULL_BRIEFS ({self.full_briefs}) — "

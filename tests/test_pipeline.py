@@ -242,3 +242,22 @@ def test_the_ship_loop_keeps_going_after_a_store_failure():
     upload_block = src[src.index("keys: dict[str, str] = {}"):]
     assert "except Exception" in upload_block
     assert "_note_unstored" in upload_block
+
+
+def test_preflight_refuses_an_anthropic_key_with_no_workspace(monkeypatch):
+    """A key alone is not enough. Without the workspace header every request is
+    refused — including the one that would tell you the workspace — so a
+    preflight that passes without it green-lights a day that 400s on the
+    Scout's first call, after the Suno credits are committed."""
+    from dailyfive.config import reload_settings
+    from dailyfive.pipeline import preflight
+
+    monkeypatch.setenv("LLM_DEFAULT", "anthropic")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setenv("ANTHROPIC_WORKSPACE_ID", "")
+    reload_settings()
+    assert any("ANTHROPIC_WORKSPACE_ID" in p for p in preflight(require_ffmpeg=False))
+
+    monkeypatch.setenv("ANTHROPIC_WORKSPACE_ID", "wrkspc_1")
+    reload_settings()
+    assert not any("ANTHROPIC_WORKSPACE_ID" in p for p in preflight(require_ffmpeg=False))

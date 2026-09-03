@@ -56,8 +56,14 @@ def fresh_db(monkeypatch, tmp_path):
     monkeypatch.setenv("WAV_TIMEOUT_S", "5")
     from dailyfive import db
     from dailyfive.config import reload_settings
+    from dailyfive.llm import AnthropicBackend
     db.reset_engine()
     reload_settings()
+    # The Anthropic client is cached on the CLASS and carries the workspace
+    # header baked in at construction, so without this a stub from one test —
+    # or a client built against the previous test's settings — answers for the
+    # rest of the session.
+    AnthropicBackend.reset()
     db.init_db()
     yield
     db.reset_engine()
