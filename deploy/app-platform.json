@@ -23,18 +23,6 @@
           "type": "SECRET"
         },
         {
-          "key": "ANTHROPIC_API_KEY",
-          "value": "PUT_IT_IN_THE_APP_NOT_IN_GIT",
-          "scope": "RUN_AND_BUILD_TIME",
-          "type": "SECRET"
-        },
-        {
-          "key": "ANTHROPIC_WORKSPACE_ID",
-          "value": "PUT_IT_IN_THE_APP_NOT_IN_GIT",
-          "scope": "RUN_AND_BUILD_TIME",
-          "type": "SECRET"
-        },
-        {
           "key": "WEBHOOK_SECRET",
           "value": "PUT_IT_IN_THE_APP_NOT_IN_GIT",
           "scope": "RUN_AND_BUILD_TIME",
@@ -42,7 +30,7 @@
         },
         {
           "key": "LLM_DEFAULT",
-          "value": "anthropic",
+          "value": "minimax",
           "scope": "RUN_AND_BUILD_TIME"
         },
         {
@@ -165,18 +153,6 @@
           "type": "SECRET"
         },
         {
-          "key": "ANTHROPIC_API_KEY",
-          "value": "PUT_IT_IN_THE_APP_NOT_IN_GIT",
-          "scope": "RUN_AND_BUILD_TIME",
-          "type": "SECRET"
-        },
-        {
-          "key": "ANTHROPIC_WORKSPACE_ID",
-          "value": "PUT_IT_IN_THE_APP_NOT_IN_GIT",
-          "scope": "RUN_AND_BUILD_TIME",
-          "type": "SECRET"
-        },
-        {
           "key": "WEBHOOK_SECRET",
           "value": "PUT_IT_IN_THE_APP_NOT_IN_GIT",
           "scope": "RUN_AND_BUILD_TIME",
@@ -184,7 +160,7 @@
         },
         {
           "key": "LLM_DEFAULT",
-          "value": "anthropic",
+          "value": "minimax",
           "scope": "RUN_AND_BUILD_TIME"
         },
         {

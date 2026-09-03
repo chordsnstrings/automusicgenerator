@@ -357,8 +357,8 @@ also receives your daily ratings, so there is only one public surface to secure.
 | Provider | Used for | Called by | Notes |
 |---|---|---|---|
 | sunoapi.org | music generation, WAV conversion, aligned lyrics | Conductor, Packager | the only irreplaceable dependency |
-| Anthropic | every reasoning role (`claude-opus-5`) | 8 roles | the roster's brain as of 2026-09-03. An identity-linked key also needs `ANTHROPIC_WORKSPACE_ID` — without it every request 400s, including the one that would tell you the workspace |
-| MiniMax | any reasoning role; optional second music supplier | 0 roles | ran the whole roster until 2026-09-03; still selectable per role, music billing needs PAYG |
+| MiniMax | any reasoning role; optional second music supplier | 8 roles | verified live on the full roster; music billing needs PAYG, not just a plan key |
+| Anthropic | any reasoning role (`claude-opus-5`) | 0 roles | supported and tested, not in use. An identity-linked key also needs `ANTHROPIC_WORKSPACE_ID` — without it every request 400s, including the one that would tell you the workspace |
 | BytePlus ModelArk | cover art (Seedream); optional video loops (Seedance) | Packager | no text models exposed — art only. **Not configured**: no key, so no covers |
 | Any brain | Scout, Director, A&R, Lyricist, Clearance, Producer, Retro, Video Director | 8 roles | set by `LLM_DEFAULT`; per-role overrides |
 | MiniMax video | the short's footage (Hailuo image-to-video) | shorts.py | 3 generations a day free; 768P does 6 or 10s, 1080P does 6 only |
@@ -585,8 +585,8 @@ Every reasoning role names a **role**, not a vendor. `src/dailyfive/llm.py`
 resolves which model answers, from configuration alone:
 
 ```
-LLM_DEFAULT=anthropic      # the whole roster on Claude
-LLM_LYRICIST=minimax       # one role moved back, nothing else touched
+LLM_DEFAULT=minimax        # the whole roster on MiniMax
+LLM_PRODUCER=anthropic     # one role moved, nothing else touched
 ```
 
 Three providers ship: `anthropic`, `minimax`, and `openai-compatible` for
@@ -607,7 +607,7 @@ rather than scattered through the agents:
   intent survives as `ANTHROPIC_EFFORT`. An OpenAI-dialect endpoint still gets
   the caller's value.
 - **Thinking spends the output budget.** Claude thinks by default and those
-  tokens come out of `max_tokens`, so the backend raises any ceiling below 4096.
+  tokens come out of `max_tokens`, so the backend raises any ceiling below 16000.
   The Lyricist's forced choice asks for one character with `max_tokens=8`; under
   adaptive thinking that returns an empty string.
 - **Reasoning tokens.** MiniMax's M-series reasons by default and can wrap the
@@ -621,10 +621,7 @@ turn that feeds the actual parse error back. Both were added for quality; both
 are what make the move off a frontier model survivable.
 
 **Verified live.** The full roster ran on `MiniMax-M3` against live trend feeds:
-11 brain calls, zero failures, 86 seconds. That was the roster until 2026-09-03,
-when it moved to `claude-opus-5`; the paragraph below is kept because it is what
-the cheap-model claim was actually tested against, and nothing has re-tested it
-since the move. The Scout produced themes with honest
+11 brain calls, zero failures, 86 seconds. The Scout produced themes with honest
 confidence scores from real Google Trends data, the Director produced checkable
 specs (96 BPM, D minor, hook at 0:00), the Lyricist produced concrete lines
 rather than stock imagery, and the Producer scored and rejected with reasoning.
