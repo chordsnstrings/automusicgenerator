@@ -13,9 +13,10 @@ all full-length             ~11 pass                   6 held as reference
                              ~3 cut
 ```
 
-**Status: v0.3 — implemented, not yet connected.** 93 tests pass. Nothing has
-run against a live API because no credentials are configured; see
-[Getting started](#getting-started).
+**Status: v0.4 — running.** 543 tests pass, and the studio has been
+shipping five songs a day unattended since 2026-08-26 at
+[dailyfive-b6bnx.ondigitalocean.app](https://dailyfive-b6bnx.ondigitalocean.app).
+See [Getting started](#getting-started) to run your own.
 
 Read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for why it is shaped this
 way — the agent roster, the flow and state diagrams, the storage layout, the

@@ -3,8 +3,10 @@
 An unattended pipeline that produces **five finished songs every day** — WAV, MP3
 and timestamped lyrics — into a dated folder on DigitalOcean Spaces.
 
-Status: **v0.3 — implemented.** All five decisions settled; 93 tests pass.
-Nothing has run against a live API yet because no credentials are configured.
+Status: **v0.4 — running.** All five decisions settled; 543 tests pass, and
+the studio has shipped five songs a day unattended since 2026-08-26. Everything
+below describes something that runs, not something planned — where a section
+describes an option that is supported but not in use, it says so.
 See the README for setup.
 
 Visual version (diagrams, cost tables, roster): see the published architecture page
